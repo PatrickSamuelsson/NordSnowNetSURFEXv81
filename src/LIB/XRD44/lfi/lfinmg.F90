@@ -1,0 +1,173 @@
+! Oct-2012 P. Marguinaud 64b LFI
+! Jan-2011 P. Marguinaud Thread-safe LFI
+! R. El Khatib 30-Mar-2012 KULOUT
+
+SUBROUTINE LFINMG_FORT                       &
+&                     (LFI, KNIVAU, KULOUT )
+USE LFIMOD, ONLY : LFICOM
+USE PARKIND1, ONLY : JPRB
+USE YOMHOOK , ONLY : LHOOK, DR_HOOK
+USE LFI_PRECISION
+IMPLICIT NONE
+!****
+!        CE SOUS-PROGRAMME SE CHARGE DE METTRE LE NIVEAU GLOBAL
+!     D'IMPRESSION DES MESSAGES (*LFI%NIMESG*) A LA VALEUR KNIVAU .
+!**
+!        ARGUMENT : KNIVAU (ENTREE) ==> NIVEAU GLOBAL D'IMPRESSION
+!                                       DES MESSAGES .
+!                                       VALEURS POSSIBLES
+!
+!     0 : N'EMETTRE QUE LES MESSAGES D'ERREURS REELLEMENT IMPORTANTS .
+!     1 : N'EMETTRE QU'UN MINIMUM DE MESSAGES "GLOBAUX", ET LES MESSAGES
+!         LIES A UN FICHIER OUVERT QUI SONT DE NIVEAU AU PLUS EGAL AU
+!         NIVEAU DE LA MESSAGERIE POUR CE FICHIER (MODE PAR DEFAUT) .
+!     2 : EMETTRE TOUS LES MESSAGES POSSIBLES, MEME S'ILS NE CORRESPON-
+!         DENT PAS A UN FICHIER OUVERT AVEC LE NIVEAU DE MESSAGERIE 2 .
+!
+!                   KULOUT : logical unit number for printing
+!
+!
+TYPE(LFICOM) :: LFI
+INTEGER (KIND=JPLIKB) KNIVAU, INIMES, IREP, INUMER
+INTEGER (KIND=JPLIKB) KULOUT
+INTEGER (KIND=JPLIKB) IOLD_NULOUT
+CHARACTER(LEN=LFI%JPLSPX) CLNSPR
+CHARACTER(LEN=LFI%JPLMES) CLMESS
+CHARACTER(LEN=LFI%JPLFTX) CLACTI
+LOGICAL LLFATA
+
+!
+REAL(KIND=JPRB) :: ZHOOK_HANDLE
+IF (LHOOK) CALL DR_HOOK('LFINMG_FORT',0,ZHOOK_HANDLE)
+CLACTI=''
+IF (LFI%LFINMG_LLPREA) THEN
+  CALL LFIINI_FORT                 &
+&                 (LFI, 2_JPLIKB )
+  LFI%LFINMG_LLPREA=.FALSE.
+ENDIF
+!
+IF (KULOUT .GE. 0) THEN
+  IOLD_NULOUT=LFI%NULOUT
+  LFI%NULOUT=KULOUT
+  IF (IOLD_NULOUT /= LFI%NULOUT) THEN
+    CALL FLUSH(INT (IOLD_NULOUT))
+    WRITE(LFI%NULOUT,                                &
+&    '('' NOTICE : LFI%NULOUT WAS CHANGED FROM '',I3, &
+&    '' TO '',I3)') IOLD_NULOUT,LFI%NULOUT
+  ENDIF
+ENDIF
+!
+IF (KNIVAU.GE.0.AND.KNIVAU.LE.2) THEN
+  INIMES=MAX (LFI%NIMESG,KNIVAU)
+  LFI%NIMESG=KNIVAU
+  IREP=0
+ELSE
+  INIMES=LFI%NIMESG
+  IREP=-2
+ENDIF
+!
+LLFATA=IREP.NE.0.AND.LFI%NERFAG.NE.2
+!
+IF (LLFATA) THEN
+  INIMES=2
+ELSEIF (IREP.NE.0) THEN
+  INIMES=0
+ELSEIF (INIMES.EQ.2) THEN
+  INIMES=2
+ELSE
+  IF (LHOOK) CALL DR_HOOK('LFINMG_FORT',1,ZHOOK_HANDLE)
+  RETURN
+ENDIF
+!
+INUMER=LFI%JPNIL
+CLNSPR='LFINMG'
+!
+IF (MAX (INIMES,LFI%NIMESG).EQ.2) THEN
+!
+  IF (LFI%LFRANC) THEN
+    WRITE (UNIT=CLMESS,                              &
+&           FMT='(''KNIVAU='',I5,'', CODE INTERNE='', &
+&           I4)') KNIVAU,IREP
+  ELSE
+    WRITE (UNIT=CLMESS,                               &
+&           FMT='(''KNIVAU='',I5,'', INTERNAL CODE='', &
+&           I4)') KNIVAU,IREP
+  ENDIF
+!
+  IF (INIMES.NE.2) CALL LFIEMS_FORT                              &
+&                                  (LFI, INUMER,LFI%NIMESG,IREP, &
+&                                   .FALSE.,CLMESS,              &
+&                                   CLNSPR,CLACTI)
+ENDIF
+!
+CALL LFIEMS_FORT                                 &
+&               (LFI, INUMER,INIMES,IREP,LLFATA, &
+&                CLMESS,CLNSPR,CLACTI)
+!
+IF (LHOOK) CALL DR_HOOK('LFINMG_FORT',1,ZHOOK_HANDLE)
+END SUBROUTINE LFINMG_FORT
+
+
+
+! Oct-2012 P. Marguinaud 64b LFI
+SUBROUTINE LFINMG64           &
+&           (KNIVAU, KULOUT)
+USE LFIMOD, ONLY : LFI => LFICOM_DEFAULT, &
+&                   LFICOM_DEFAULT_INIT,   &
+&                   NEW_LFI_DEFAULT
+USE LFI_PRECISION
+IMPLICIT NONE
+! Arguments
+INTEGER (KIND=JPLIKB)  KNIVAU                                 ! IN   
+INTEGER (KIND=JPLIKB)  KULOUT                                 ! IN   
+
+IF (.NOT. LFICOM_DEFAULT_INIT) CALL NEW_LFI_DEFAULT ()
+
+CALL LFINMG_FORT                 &
+&           (LFI, KNIVAU, KULOUT)
+
+END SUBROUTINE LFINMG64
+
+SUBROUTINE LFINMG             &
+&           (KNIVAU, KULOUT)
+USE LFIMOD, ONLY : LFI => LFICOM_DEFAULT, &
+&                   LFICOM_DEFAULT_INIT,   &
+&                   NEW_LFI_DEFAULT
+USE LFI_PRECISION
+IMPLICIT NONE
+! Arguments
+INTEGER (KIND=JPLIKM)  KNIVAU                                 ! IN   
+INTEGER (KIND=JPLIKM)  KULOUT                                 ! IN   
+
+IF (.NOT. LFICOM_DEFAULT_INIT) CALL NEW_LFI_DEFAULT ()
+
+CALL LFINMG_MT                  &
+&           (LFI, KNIVAU, KULOUT)
+
+END SUBROUTINE LFINMG
+
+SUBROUTINE LFINMG_MT             &
+&           (LFI, KNIVAU, KULOUT)
+USE LFIMOD, ONLY : LFICOM
+USE LFI_PRECISION
+IMPLICIT NONE
+! Arguments
+TYPE (LFICOM)          LFI                                    ! INOUT
+INTEGER (KIND=JPLIKM)  KNIVAU                                 ! IN   
+INTEGER (KIND=JPLIKM)  KULOUT                                 ! IN   
+! Local integers
+INTEGER (KIND=JPLIKB)  INIVAU                                 ! IN   
+INTEGER (KIND=JPLIKB)  IULOUT                                 ! IN   
+! Convert arguments
+
+INIVAU     = INT (    KNIVAU, JPLIKB)
+IULOUT     = INT (    KULOUT, JPLIKB)
+
+CALL LFINMG_FORT                 &
+&           (LFI, INIVAU, IULOUT)
+
+
+END SUBROUTINE LFINMG_MT
+
+!INTF KNIVAU        IN    
+!INTF KULOUT        IN    

@@ -1,0 +1,295 @@
+! Oct-2012 P. Marguinaud 64b LFI
+! Jan-2011 P. Marguinaud Thread-safe LFI
+
+SUBROUTINE LFIINI_FORT               &
+&                     (LFI, KOPTIO )
+USE LFIMOD, ONLY : LFICOM
+USE PARKIND1, ONLY : JPRB
+USE YOMHOOK , ONLY : LHOOK, DR_HOOK
+USE LFI_PRECISION
+IMPLICIT NONE
+!****
+!        CE SOUS-PROGRAMME EST CHARGE DES INITIALISATIONS DU LOGICIEL
+!     DE FICHIERS INDEXES LFI .
+!**
+!        ARGUMENT : KOPTIO  ==> OPTION CONCERNANT LE MODE D'UTILISATION.
+!                  (ENTREE)     (MULTI-TACHE OU NON)
+!     VALEURS POSSIBLES : 0 ==> MODE MONO-TACHE PRESCRIT
+!                         1 ==> MODE MULTI-TACHE PRESCRIT
+!                         2 ==> UTILISATION DU MODE PAR DEFAUT SI C'EST
+!                               LE PREMIER APPEL; SINON ON GARDE LE MODE
+!                               PRESCRIT ANTERIEUREMENT .
+!
+!
+TYPE(LFICOM) :: LFI
+INTEGER (KIND=JPLIKB) KOPTIO, JNPAGE, J, JRANG, IREP 
+INTEGER (KIND=JPLIKB) INIMES, INUMER, IRGPIM
+!
+LOGICAL LLNMUL, LLASGN, LLREL
+CHARACTER(LEN=LFI%JPLSPX) CLNSPR
+CHARACTER(LEN=LFI%JPLMES) CLMESS
+CHARACTER(LEN=LFI%JPLFTX) CLACTI
+LOGICAL LLFATA
+
+!
+REAL(KIND=JPRB) :: ZHOOK_HANDLE
+IF (LHOOK) CALL DR_HOOK('LFIINI_FORT',0,ZHOOK_HANDLE)
+CLACTI=''
+IF (LFI%LFIINI_LLPREA) THEN
+!
+!         C'EST LE PREMIER APPEL AU SOUS-PROGRAMME - INITIALISATIONS .
+!
+  LFI%NBFIOU=0
+  LFI%NFACTM=0
+  LFI%NULOFM=0
+  LFI%NUIMEX=0
+  LFI%NERFAG=1
+  LFI%NISTAG=1
+  LFI%NIMESG=1
+  LFI%NPISAF=0
+  LFI%LTAMLG=.FALSE.
+  LFI%LTAMEG=.TRUE.
+  LFI%LMISOP=.FALSE.
+  LFI%LFRANC=.TRUE.
+  LFI%LERFAT(0)=.TRUE.
+  LFI%NIVMES(0)=0
+!
+!          L'indice zero dans LFI%MFACTU correspond au facteur multiplicatif
+!     "par defaut" .
+!
+#ifdef HIGHRES
+  LFI%MFACTU(0)=6
+#else
+  LFI%MFACTU(0)=1
+#endif
+  LFI%MFACTM(0)=0
+  LFI%NUMAPH(0)=LFI%JPNIL
+!
+  LFI%CFGMXD(0)='locale'
+  LFI%NBMOSD(0)=LFI%JPNBIM
+  LFI%NBCASD(0)=LFI%JPNBIC
+  LFI%CFGMXD(1)='ieee'
+  LFI%NBMOSD(1)=32
+  LFI%NBCASD(1)=8
+  LFI%CFGMXD(2)='ultrix'
+  LFI%NBMOSD(2)=32
+  LFI%NBCASD(2)=8
+  LFI%CFGMXD(3)='ieee_dp'
+  LFI%NBMOSD(3)=64
+  LFI%NBCASD(3)=8
+  LFI%CFGMXD(4)='ultrix_dp'
+  LFI%NBMOSD(4)=64
+  LFI%NBCASD(4)=8
+  LFI%CTYPMX='ircdl'
+!
+  DO JNPAGE=1,LFI%JPNXPI
+  LFI%MCOPIF(JNPAGE)=LFI%JPNIL
+  LFI%MRGPIF(JNPAGE)=LFI%JPNIL
+  LFI%LECRPI(JNPAGE,1)=.FALSE.
+  LFI%LECRPI(JNPAGE,2)=.FALSE.
+  ENDDO
+!
+  DO J=1,LFI%JPNPIA
+!
+  DO JRANG=1,LFI%JPNXFI
+  IRGPIM=JRANG+(J-1)*LFI%JPNXFI
+  LFI%MCOPIF(IRGPIM)=JRANG
+  LFI%MRGPIM(J,JRANG)=IRGPIM
+  ENDDO
+!
+  ENDDO
+!
+  DO JRANG=1,LFI%JPNXFI
+  LFI%MRGPIF(JRANG)=1
+  LFI%NUMERO(JRANG)=LFI%JPNIL
+  LFI%NUMAPH(JRANG)=LFI%JPNIL
+  ENDDO
+!
+  DO J=1,LFI%JPNCPN
+  LFI%CHINCO(J:J)='?'
+  ENDDO
+!
+  DO J=1,LFI%JPIMEX
+  LFI%MNUIEX(J)=LFI%JPNIL
+  LFI%NREXPL(0,J)=0
+  ENDDO
+!
+  LFI%LFIINI_LLPREA=.FALSE.
+  LLNMUL=(KOPTIO.EQ.1).OR.(KOPTIO.EQ.2.AND.LFI%LFIINI_LLDEFM)
+  LLASGN=LLNMUL
+  LLREL=.FALSE.
+!
+ELSEIF (KOPTIO.EQ.2) THEN
+!
+!         CE N'EST PAS LE PREMIER APPEL, MAIS COMME L'ARGUMENT VAUT 2,
+!         ON LAISSE LES CHOSES EN PLACE .
+!
+  LLNMUL=LFI%LMULTI
+  LLASGN=.FALSE.
+  LLREL =.FALSE.
+ELSE
+!
+!     CE N'EST PAS LE PREMIER APPEL ET LE MODE EST PASSE 'EXPLICITEMENT'
+!
+  LLNMUL=KOPTIO.EQ.1
+  LLASGN=LLNMUL.AND.(.NOT.LFI%LMULTI)
+  LLREL =(.NOT.LLNMUL).AND.LFI%LMULTI
+!
+  IF ((LLASGN.OR.LLREL).AND.LFI%NBFIOU.NE.0) THEN
+    IREP=-4
+    GOTO 1001
+  ENDIF
+!
+ENDIF
+!
+LFI%LMULTI=LLNMUL
+!
+!        Le controle de coherence ci-dessous ne peut etre fait qu'apres
+!     l'initialisation eventuelle des variables globales du logiciel.
+!
+IF (KOPTIO.LT.0.OR.KOPTIO.GT.2) THEN
+  IREP=-2
+  GOTO 1001
+ENDIF
+!
+IREP=0
+!
+IF (LLASGN) THEN
+  CALL LFIVER_FORT                         &
+&                 (LFI, LFI%VERGLA,'ASGN')
+ELSEIF (LLREL) THEN
+  CALL LFIVER_FORT                        &
+&                 (LFI, LFI%VERGLA,'REL')
+ENDIF
+!
+1001 CONTINUE
+!
+!        MESSAGERIE EVENTUELLE, AVEC ABORT SI NECESSAIRE .
+!
+LLFATA=IREP.NE.0.AND.LFI%NERFAG.NE.2
+!
+IF (LLFATA) THEN
+  INIMES=2
+ELSEIF (IREP.NE.0) THEN
+  INIMES=0
+ELSEIF (LFI%NIMESG.EQ.2.OR.(LFI%NIMESG.EQ.1.AND.KOPTIO.NE.2)) THEN
+  INIMES=LFI%NIMESG
+ELSE
+  IF (LHOOK) CALL DR_HOOK('LFIINI_FORT',1,ZHOOK_HANDLE)
+  RETURN
+ENDIF
+!
+CLNSPR='LFIINI'
+INUMER=LFI%JPNIL
+!
+IF (MAX (INIMES,LFI%NIMESG).EQ.2) THEN
+!
+  IF (LFI%LFRANC) THEN
+    WRITE (UNIT=CLMESS,                              &
+&           FMT='(''KOPTIO='',I5,'', CODE INTERNE='', &
+&           I4)') KOPTIO,IREP
+  ELSE
+    WRITE (UNIT=CLMESS,                               &
+&           FMT='(''KOPTIO='',I5,'', INTERNAL CODE='', &
+&           I4)') KOPTIO,IREP
+  ENDIF
+!
+  IF (INIMES.NE.2) CALL LFIEMS_FORT                              &
+&                                  (LFI, INUMER,LFI%NIMESG,IREP, &
+&                                   .FALSE.,CLMESS,              &
+&                                   CLNSPR,CLACTI)
+ENDIF
+!
+CALL LFIEMS_FORT                                 &
+&               (LFI, INUMER,INIMES,IREP,LLFATA, &
+&                CLMESS,CLNSPR,CLACTI)
+!
+IF (INIMES.GE.1.AND.KOPTIO.NE.2) THEN
+!
+!        Cette messagerie de niveau 1 n'est pas emise en cas d'erreur,
+!     meme non fatale.
+!
+  IF (LFI%LFRANC) THEN
+!
+    IF (KOPTIO.EQ.0) THEN
+      CLMESS='$ Mode MONO-TACHE Prescrit explicitement... $'
+    ELSE
+      CLMESS='$ Mode MULTI-TACHE Prescrit explicitement... $'
+    ENDIF
+!
+  ELSE
+!
+    IF (KOPTIO.EQ.0) THEN
+      CLMESS='$ MONO-TASKING Mode explicitely Specified... $'
+    ELSE
+      CLMESS='$ MULTI-TASKING Mode explicitely Specified... $'
+    ENDIF
+!
+  ENDIF
+!
+  CALL LFIEMS_FORT                                  &
+&                 (LFI, INUMER,INIMES,IREP,.FALSE., &
+&                  CLMESS,CLNSPR,CLACTI)
+ENDIF
+!
+IF (LHOOK) CALL DR_HOOK('LFIINI_FORT',1,ZHOOK_HANDLE)
+END SUBROUTINE LFIINI_FORT
+
+
+
+! Oct-2012 P. Marguinaud 64b LFI
+SUBROUTINE LFIINI64           &
+&           (KOPTIO)
+USE LFIMOD, ONLY : LFI => LFICOM_DEFAULT, &
+&                   LFICOM_DEFAULT_INIT,   &
+&                   NEW_LFI_DEFAULT
+USE LFI_PRECISION
+IMPLICIT NONE
+! Arguments
+INTEGER (KIND=JPLIKB)  KOPTIO                                 ! IN   
+
+IF (.NOT. LFICOM_DEFAULT_INIT) CALL NEW_LFI_DEFAULT ()
+
+CALL LFIINI_FORT            &
+&           (LFI, KOPTIO)
+
+END SUBROUTINE LFIINI64
+
+SUBROUTINE LFIINI             &
+&           (KOPTIO)
+USE LFIMOD, ONLY : LFI => LFICOM_DEFAULT, &
+&                   LFICOM_DEFAULT_INIT,   &
+&                   NEW_LFI_DEFAULT
+USE LFI_PRECISION
+IMPLICIT NONE
+! Arguments
+INTEGER (KIND=JPLIKM)  KOPTIO                                 ! IN   
+
+IF (.NOT. LFICOM_DEFAULT_INIT) CALL NEW_LFI_DEFAULT ()
+
+CALL LFIINI_MT             &
+&           (LFI, KOPTIO)
+
+END SUBROUTINE LFIINI
+
+SUBROUTINE LFIINI_MT             &
+&           (LFI, KOPTIO)
+USE LFIMOD, ONLY : LFICOM
+USE LFI_PRECISION
+IMPLICIT NONE
+! Arguments
+TYPE (LFICOM)          LFI                                    ! INOUT
+INTEGER (KIND=JPLIKM)  KOPTIO                                 ! IN   
+! Local integers
+INTEGER (KIND=JPLIKB)  IOPTIO                                 ! IN   
+! Convert arguments
+
+IOPTIO     = INT (    KOPTIO, JPLIKB)
+
+CALL LFIINI_FORT            &
+&           (LFI, IOPTIO)
+
+
+END SUBROUTINE LFIINI_MT
+
+!INTF KOPTIO        IN    

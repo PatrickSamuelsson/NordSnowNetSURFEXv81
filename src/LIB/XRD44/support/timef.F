@@ -1,0 +1,90 @@
+#if defined ( VPP )
+      FUNCTION TIMEF()
+      DATA IFIRST/0/
+      SAVE IFIRST,ZFIRST
+!
+!   fujitsu special
+!
+      CALL GETTOD(ZTIMEF)
+      ZTIMEF=ZTIMEF/1000.0
+!
+      IF(IFIRST.EQ.0) THEN
+         IFIRST=1
+         ZFIRST=ZTIMEF
+         TIMEF=0.0
+      ELSE
+         TIMEF=(ZTIMEF-ZFIRST)
+      ENDIF
+!
+      RETURN
+      ENDFUNCTION TIMEF
+#elif defined ( RS6K )
+      REAL*8 FUNCTION TIMEF()
+      INTEGER*8 IRTC
+      EXTERNAL IRTC
+      DATA IFIRST/0/
+      SAVE IFIRST,ZFIRST
+!
+      ZTIMEF=IRTC()*1.0E-6
+!
+      IF(IFIRST.EQ.0) THEN
+         IFIRST=1
+         ZFIRST=ZTIMEF
+         TIMEF=0.0
+      ELSE
+         TIMEF=(ZTIMEF-ZFIRST)
+      ENDIF
+!
+      RETURN
+      ENDFUNCTION TIMEF
+#elif defined ( _CRAYFTN )
+      REAL*8 FUNCTION TIMEF()
+      INTEGER*8 I_TIME1,I_RATE
+      REAL*8 ZTIMEF,ZFIRST
+      DATA IFIRST/0/
+      SAVE IFIRST,ZFIRST
+
+C     THIS IS A REAL TIME CLOCK IN MILLISECONDS.
+C     USAGE OF FORTRAN90 INTRINSIC FUNCTION.
+      CALL SYSTEM_CLOCK (COUNT=I_TIME1,COUNT_RATE=I_RATE)
+      ZTIMEF=DFLOAT(I_TIME1)/DFLOAT(I_RATE)
+
+      IF(IFIRST.EQ.0) THEN
+         IFIRST=1
+         ZFIRST=ZTIMEF
+         TIMEF=0.0
+      ELSE
+         TIMEF=1000.0*(ZTIMEF-ZFIRST)
+      ENDIF
+
+      RETURN
+      ENDFUNCTION TIMEF
+
+#else
+      FUNCTION TIMEF()
+      USE PARKIND1, ONLY : JPIM, JPRB
+      IMPLICIT NONE
+      REAL(KIND=JPRB)         :: TIMEF
+      INTEGER(KIND=JPIM),SAVE :: IFIRST
+      INTEGER(KIND=JPIM)      :: I_RATE, I_TIME1
+      REAL(KIND=JPRB),SAVE    :: ZFIRST
+      REAL(KIND=JPRB)         :: ZTIMEF
+      DATA IFIRST/0/
+!RJ       save ifirst,zfirst
+!
+!     This is a real time clock in milliseconds.
+!     Usage of Fortran90 intrinsic function.
+      CALL SYSTEM_CLOCK (COUNT=I_TIME1,COUNT_RATE=I_RATE)
+      ZTIMEF=REAL(I_TIME1,KIND=JPRB)/REAL(I_RATE,KIND=JPRB)
+
+      IF(IFIRST.EQ.0) THEN
+         IFIRST=1
+         ZFIRST=ZTIMEF
+         TIMEF=0.0
+      ELSE
+         TIMEF=1000.0*(ZTIMEF-ZFIRST)
+      ENDIF
+
+      RETURN
+      ENDFUNCTION TIMEF
+#endif

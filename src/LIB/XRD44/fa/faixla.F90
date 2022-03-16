@@ -1,0 +1,123 @@
+! Oct-2012 P. Marguinaud 64b LFI
+! Jan-2011 P. Marguinaud Thread-safe FA
+SUBROUTINE FAIXLA_FORT           &
+&                     (FA)
+USE FA_MOD, ONLY : FA_COM
+USE PARKIND1, ONLY : JPRB
+USE YOMHOOK , ONLY : LHOOK, DR_HOOK
+USE LFI_PRECISION
+IMPLICIT NONE
+!****
+!        Ce sous-programme est charge des Initialisations des
+!     tableaux XLAp.d., utilises pour aplatir le spectre des champs
+!     avant le compactage (coefficients spectraux seulement).
+!**
+!
+!
+!
+TYPE(FA_COM) :: FA
+INTEGER (KIND=JPLIKB) J, JN, IDEBUT
+INTEGER (KIND=JPLIKB) IFIN, INDM, INDN, JJPUIS
+
+!
+!
+!        On commence par les allocations des differents tableaux
+!
+REAL(KIND=JPRB) :: ZHOOK_HANDLE
+IF (LHOOK) CALL DR_HOOK('FAIXLA_MT',0,ZHOOK_HANDLE)
+ALLOCATE (FA%XLAP1D (FA%JPXTRO,0:1))
+ALLOCATE (FA%XLAP1DA (FA%JPXTRO*FA%JPXTRO,0:1))
+ALLOCATE (FA%XLAP2D (2:FA%JPXCSP,FA%JPUILA,0:1))
+ALLOCATE (FA%XLAP2DA (FA%JPXTRO*FA%JPXTRO,FA%JPUILA,0:1))
+!
+DO JN=1,FA%JPXTRO
+  FA%XLAP1D(JN,0)=REAL (JN*(JN+1), JPDBLR)
+  FA%XLAP1D(JN,1)=1._JPDBLR/FA%XLAP1D(JN,0)
+ENDDO
+!
+DO JN=1,FA%JPXTRO*FA%JPXTRO
+  INDN=1+(JN-1)/FA%JPXTRO
+  INDM=JN-(INDN-1)*FA%JPXTRO
+  FA%XLAP1DA(JN,0)=REAL (INDN**2+INDM**2, JPDBLR)
+  FA%XLAP1DA(JN,1)=1._JPDBLR/FA%XLAP1DA(JN,0)
+ENDDO
+!
+DO JN=1,FA%JPXTRO
+  IDEBUT=JN**2+1
+  IFIN=(1+JN)**2
+!
+  DO JJPUIS=1,FA%JPUILA
+!
+  DO J=IDEBUT,IFIN
+    FA%XLAP2D(J,JJPUIS,0)=FA%XLAP1D(JN,0)**JJPUIS
+    FA%XLAP2D(J,JJPUIS,1)=1._JPDBLR/FA%XLAP2D(J,JJPUIS,0)
+  ENDDO
+!        
+  ENDDO
+!
+ENDDO
+!
+DO JJPUIS=1,FA%JPUILA
+!
+DO JN=1,FA%JPXTRO**2 
+  FA%XLAP2DA(JN,JJPUIS,0)=FA%XLAP1DA(JN,0)**JJPUIS
+  FA%XLAP2DA(JN,JJPUIS,1)=1._JPDBLR/FA%XLAP2DA(JN,JJPUIS,0)
+ENDDO
+!
+ENDDO
+!
+!
+IF (LHOOK) CALL DR_HOOK('FAIXLA_MT',1,ZHOOK_HANDLE)
+END SUBROUTINE FAIXLA_FORT
+
+
+
+! Oct-2012 P. Marguinaud 64b LFI
+SUBROUTINE FAIXLA64           &
+&           ()
+USE FA_MOD, ONLY : FA => FA_COM_DEFAULT, &
+&                   FA_COM_DEFAULT_INIT,  &
+&                   NEW_FA_DEFAULT
+USE LFI_PRECISION
+IMPLICIT NONE
+! Arguments
+
+IF (.NOT. FA_COM_DEFAULT_INIT) CALL NEW_FA_DEFAULT ()
+
+CALL FAIXLA_FORT           &
+&           (FA)
+
+END SUBROUTINE FAIXLA64
+
+SUBROUTINE FAIXLA             &
+&           ()
+USE FA_MOD, ONLY : FA => FA_COM_DEFAULT, &
+&                   FA_COM_DEFAULT_INIT,  &
+&                   NEW_FA_DEFAULT
+USE LFI_PRECISION
+IMPLICIT NONE
+! Arguments
+
+IF (.NOT. FA_COM_DEFAULT_INIT) CALL NEW_FA_DEFAULT ()
+
+CALL FAIXLA_MT             &
+&           (FA)
+
+END SUBROUTINE FAIXLA
+
+SUBROUTINE FAIXLA_MT             &
+&           (FA)
+USE FA_MOD, ONLY : FA_COM
+USE LFI_PRECISION
+IMPLICIT NONE
+! Arguments
+TYPE (FA_COM)          FA                                     ! INOUT
+! Local integers
+! Convert arguments
+
+
+CALL FAIXLA_FORT           &
+&           (FA)
+
+
+END SUBROUTINE FAIXLA_MT

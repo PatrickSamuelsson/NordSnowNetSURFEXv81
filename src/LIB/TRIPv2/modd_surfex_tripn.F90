@@ -1,0 +1,17 @@
+MODULE MODD_SURFEX_TRIP_n
+!
+USE MODD_TRIP, ONLY : TRIP_t
+USE MODD_TRIP_GRID, ONLY : TRIP_GRID_t
+USE MODD_TRIP_DIAG, ONLY : TRIP_DIAG_t
+!
+!---------------------------------------------------------------------------
+!
+TYPE TRIP_MODEL_t 
+!
+TYPE(TRIP_t) :: TP
+TYPE(TRIP_GRID_t) :: TPG
+TYPE(TRIP_DIAG_t) :: TPDG
+!
+END TYPE TRIP_MODEL_t
+!
+END MODULE MODD_SURFEX_TRIP_n

@@ -1,0 +1,205 @@
+! Oct-2012 P. Marguinaud 64b LFI
+! Jan-2011 P. Marguinaud Thread-safe LFI
+SUBROUTINE LFIMOE_FORT                             &
+&                     ( LFI, KREP, KRANG, KRETIN )
+USE LFIMOD,   ONLY : LFICOM
+USE PARKIND1, ONLY : JPRB
+USE YOMHOOK , ONLY : LHOOK, DR_HOOK
+USE LFI_PRECISION
+IMPLICIT NONE
+!****
+!        SOUS-PROGRAMME *INTERNE* DU LOGICIEL DE FICHIERS INDEXES LFI
+!     MODIFICATION DE L'ARTICLE DOCUMENTAIRE, LIMITEE A 3 ELEMENTS,
+!     LORSQUE LE FICHIER A SUBI SA PREMIERE MODIFICATION DEPUIS LA
+!     DERNIERE OUVERTURE.
+!
+!     APPELE PAR LFIECR, LFIREN, LFISUP.
+!**
+!    ARGUMENTS : KREP   (SORTIE) ==> CODE-REPONSE DU SOUS-PROGRAMME;
+!                KRANG  (ENTREE) ==> RANG ( DANS LA TABLE *LFI%NUMERO* )
+!                                    DE L'UNITE LOGIQUE CONCERNEE;
+!                KRETIN (SORTIE) ==> CODE-RETOUR INTERNE.
+!
+!
+TYPE(LFICOM) :: LFI
+INTEGER (KIND=JPLIKB) IDESCR (LFI%JPLARX)
+INTEGER (KIND=JPLIKB) KREP, KRANG, KRETIN, INUMER, IFACTM, IREC
+INTEGER (KIND=JPLIKB) IRANG, INAPHY, IRETOU, INIMES, IRETIN
+!
+CHARACTER(LEN=LFI%JPLSPX) CLNSPR
+CHARACTER(LEN=LFI%JPLMES) CLMESS
+CHARACTER(LEN=LFI%JPLFTX) CLACTI
+LOGICAL LLFATA
+
+!**
+!     1. -  CONTROLES DES PARAMETRES D'APPEL ET INITIALISATIONS.
+!-----------------------------------------------------------------------
+!
+REAL(KIND=JPRB) :: ZHOOK_HANDLE
+IF (LHOOK) CALL DR_HOOK('LFIMOE_FORT',0,ZHOOK_HANDLE)
+CLACTI=''
+IRETOU=0
+!
+IF (KRANG.LE.0.OR.KRANG.GT.LFI%JPNXFI) THEN
+  KREP=-16
+  GOTO 1001
+ENDIF
+!
+IRANG=KRANG
+KREP=0
+INUMER=LFI%NUMERO(IRANG)
+IFACTM=LFI%MFACTM(IRANG)
+IREC=1
+!**
+!     2. -  LECTURE/MODIFICATION/REECRITURE DE L'ARTICLE DOCUMENTAIRE.
+!-----------------------------------------------------------------------
+!
+INAPHY=IREC
+CALL LFILDO_FORT                                   &
+&               (LFI, KREP,INUMER,IREC,IDESCR(1),&
+&                LFI%NBREAD(IRANG),IFACTM,       &
+&                LFI%YLFIC (IRANG),IRETIN)
+!
+IF (IRETIN.NE.0) THEN
+  GOTO 904
+ENDIF
+!
+IDESCR(LFI%JPFEAM)=1
+CALL LFIDAH_FORT                                             &
+&               (LFI, IDESCR(LFI%JPDMNG),IDESCR(LFI%JPHMNG))
+LFI%MDES1D(IXM(LFI%JPDMNG,IRANG))=IDESCR(LFI%JPDMNG)
+LFI%MDES1D(IXM(LFI%JPHMNG,IRANG))=IDESCR(LFI%JPHMNG)
+CALL LFIEDO_FORT                                    &
+&               (LFI, KREP,INUMER,IREC,IDESCR(1), &
+&                LFI%NBWRIT(IRANG),IFACTM,        &
+&                LFI%YLFIC (IRANG),IRETIN)
+!
+IF (IRETIN.NE.0) THEN
+  GOTO 903
+ENDIF
+!
+GOTO 1001
+!**
+!     9.  - CI-DESSOUS, ETIQUETTES DE BRANCHEMENT EN CAS D'ERREUR E/S.
+!      AU CAS OU, ON FORCE LE CODE-REPONSE ENTREE/SORTIE A ETRE POSITIF.
+!-----------------------------------------------------------------------
+!
+903 CONTINUE
+IRETOU=1
+CLACTI='WRITE'
+GOTO 909
+!
+904 CONTINUE
+IRETOU=2
+CLACTI='READ'
+!
+909 CONTINUE
+KREP=ABS (KREP)
+LFI%NUMAPH(IRANG)=INAPHY
+!**
+!    10.  -  PHASE TERMINALE : MESSAGERIE INTERNE EVENTUELLE,
+!            VIA LE SOUS-PROGRAMME "LFIEMS", PUIS RETOUR.
+!-----------------------------------------------------------------------
+!
+1001 CONTINUE
+LLFATA=LLMOER (KREP,KRANG)
+!
+IF (KREP.EQ.0) THEN
+  KRETIN=0
+ELSEIF (KREP.GT.0) THEN
+  KRETIN=IRETOU
+ELSE
+  KRETIN=3
+ENDIF
+!
+IF (LFI%LMISOP.OR.LLFATA) THEN
+  INUMER=LFI%NUMERO(KRANG)
+  INIMES=2
+  CLNSPR='LFIMOE'
+  WRITE (UNIT=CLMESS,FMT='(''KREP='',I4,'', KRANG='',I3, &
+&  '', KRETIN='',I2)')                                    &
+&    KREP,KRANG,KRETIN
+  CALL LFIEMS_FORT                                  &
+&                 (LFI, INUMER,INIMES,KREP,.FALSE., &
+&                  CLMESS,CLNSPR,CLACTI)
+ENDIF
+!
+IF (LHOOK) CALL DR_HOOK('LFIMOE_FORT',1,ZHOOK_HANDLE)
+
+CONTAINS
+
+#include "lficom2.ixm.h"
+#include "lficom2.llmoer.h"
+
+END SUBROUTINE LFIMOE_FORT
+
+
+
+! Oct-2012 P. Marguinaud 64b LFI
+SUBROUTINE LFIMOE64             &
+&           (KREP, KRANG, KRETIN)
+USE LFIMOD, ONLY : LFI => LFICOM_DEFAULT, &
+&                   LFICOM_DEFAULT_INIT,   &
+&                   NEW_LFI_DEFAULT
+USE LFI_PRECISION
+IMPLICIT NONE
+! Arguments
+INTEGER (KIND=JPLIKB)  KREP                                   !   OUT
+INTEGER (KIND=JPLIKB)  KRANG                                  ! IN   
+INTEGER (KIND=JPLIKB)  KRETIN                                 !   OUT
+
+IF (.NOT. LFICOM_DEFAULT_INIT) CALL NEW_LFI_DEFAULT ()
+
+CALL LFIMOE_FORT                     &
+&           (LFI, KREP, KRANG, KRETIN)
+
+END SUBROUTINE LFIMOE64
+
+SUBROUTINE LFIMOE               &
+&           (KREP, KRANG, KRETIN)
+USE LFIMOD, ONLY : LFI => LFICOM_DEFAULT, &
+&                   LFICOM_DEFAULT_INIT,   &
+&                   NEW_LFI_DEFAULT
+USE LFI_PRECISION
+IMPLICIT NONE
+! Arguments
+INTEGER (KIND=JPLIKM)  KREP                                   !   OUT
+INTEGER (KIND=JPLIKM)  KRANG                                  ! IN   
+INTEGER (KIND=JPLIKM)  KRETIN                                 !   OUT
+
+IF (.NOT. LFICOM_DEFAULT_INIT) CALL NEW_LFI_DEFAULT ()
+
+CALL LFIMOE_MT                       &
+&           (LFI, KREP, KRANG, KRETIN)
+
+END SUBROUTINE LFIMOE
+
+SUBROUTINE LFIMOE_MT                 &
+&           (LFI, KREP, KRANG, KRETIN)
+USE LFIMOD, ONLY : LFICOM
+USE LFI_PRECISION
+IMPLICIT NONE
+! Arguments
+TYPE (LFICOM)          LFI                                    ! INOUT
+INTEGER (KIND=JPLIKM)  KREP                                   !   OUT
+INTEGER (KIND=JPLIKM)  KRANG                                  ! IN   
+INTEGER (KIND=JPLIKM)  KRETIN                                 !   OUT
+! Local integers
+INTEGER (KIND=JPLIKB)  IREP                                   !   OUT
+INTEGER (KIND=JPLIKB)  IRANG                                  ! IN   
+INTEGER (KIND=JPLIKB)  IRETIN                                 !   OUT
+! Convert arguments
+
+IRANG      = INT (     KRANG, JPLIKB)
+
+CALL LFIMOE_FORT                     &
+&           (LFI, IREP, IRANG, IRETIN)
+
+KREP       = INT (      IREP, JPLIKM)
+KRETIN     = INT (    IRETIN, JPLIKM)
+
+END SUBROUTINE LFIMOE_MT
+
+!INTF KREP            OUT 
+!INTF KRANG         IN    
+!INTF KRETIN          OUT 

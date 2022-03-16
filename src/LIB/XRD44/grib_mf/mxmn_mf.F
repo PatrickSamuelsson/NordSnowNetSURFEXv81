@@ -1,0 +1,64 @@
+      SUBROUTINE MXMN_MF (PARRAY,KLEN,PMAX,PMIN)
+      USE PARKIND1, ONLY : JPRB
+      USE YOMHOOK , ONLY : LHOOK, DR_HOOK
+      USE LFI_PRECISION
+!
+!*******************************************************************
+!*
+!*    NAME      : MXMN
+!*
+!*    FUNCTION  : RETURN MAXIMUM AND MINIMUM VALUES FROM AN ARRAY
+!*                OF FLOATING POINT NUMBERS.
+!*
+!*    INPUT     : PARRAY - ARRAY OF NUMBERS
+!*                KLEN   - LAST WORD OF THIS ARRAY
+!*
+!*    OUTPUT    : PMAX - MAXIMUM VALUE
+!*                PMIN - MINIMUM VALUE
+!*
+!*
+!*     JOHN HENNESSY, ECMWF, 22 APRIL 1985
+!*
+!*    Modified by Jean CLOCHARD, French DMN, January 1990.
+!*    R. El Khatib 2004-10-12 MAXVAL,MINVAL
+!*    F. Vana + NEC Apr-2009: OpenMP
+!*
+!*******************************************************************
+!
+      USE OML_MOD , ONLY : OML_MY_THREAD , OML_GET_NUM_THREADS
+!
+      IMPLICIT NONE
+!
+      INTEGER (KIND=JPLIKM) :: KLEN
+      REAL (KIND=JPDBLD) :: PMAX
+      REAL (KIND=JPDBLD) :: PMIN
+      REAL (KIND=JPDBLD) :: PARRAY (KLEN)
+      INTEGER (KIND=JPLIKM) :: START, END, BLOCKS, MY_THREAD, THREADS
+      REAL (KIND=JPDBLD) :: PMAX_LOCAL, PMIN_LOCAL
+!
+      REAL(KIND=JPRB) :: ZHOOK_HANDLE
+      IF (LHOOK) CALL DR_HOOK('MXMN_MF',0,ZHOOK_HANDLE)
+      PMAX = -HUGE(PARRAY)
+      PMIN = HUGE(PARRAY)
+!$OMP PARALLEL                                                          &
+!$OMP&PRIVATE(START,END,BLOCKS,MY_THREAD,THREADS,PMAX_LOCAL,PMIN_LOCAL)
+      MY_THREAD = OML_MY_THREAD() - 1
+      THREADS = OML_GET_NUM_THREADS()
+      BLOCKS = (KLEN + THREADS) / THREADS
+      START = MY_THREAD * BLOCKS + 1
+      END = MIN(START+BLOCKS-1,KLEN)
+      PMAX_LOCAL = MAXVAL(PARRAY(START:END))
+      PMIN_LOCAL = MINVAL(PARRAY(START:END))
+!$OMP CRITICAL
+      PMAX = MAX(PMAX,PMAX_LOCAL)
+      PMIN = MIN(PMIN,PMIN_LOCAL)
+!$OMP END CRITICAL
+!$OMP END PARALLEL
+
+! Avoid +/- 0
+  
+      IF (ABS (PMAX) == 0.) PMAX = 0.
+      IF (ABS (PMIN) == 0.) PMIN = 0.
+
+      IF (LHOOK) CALL DR_HOOK('MXMN_MF',1,ZHOOK_HANDLE)
+      ENDSUBROUTINE MXMN_MF

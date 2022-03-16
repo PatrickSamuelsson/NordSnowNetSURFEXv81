@@ -1,0 +1,683 @@
+MODULE LFIMOD
+! Jan-2011 P. Marguinaud Interface to thread-safe LFI
+! Sep-2012 P. Marguinaud Initialize data + DrHook
+USE PARKIND1, ONLY : JPIM, JPRB, JPIB, JPIA
+USE YOMHOOK, ONLY : LHOOK, DR_HOOK
+USE LFI_PRECISION
+IMPLICIT NONE
+!
+!----- DESCRIPTION DES "PARAMETER" DU LOGICIEL DE FICHIERS INDEXES -----
+!-----  (et des variables logiques a charger absolument partout )  -----
+!
+!     JPNBIM = NOMBRE DE BITS PAR MOT MACHINE
+!     JPNBIC = NOMBRE DE BITS PAR CARACTERE
+!     JPNCMO = NOMBRE DE CARACTERES PAR MOT MACHINE
+!
+!     JPNCPN = NOMBRE MAXI. POSSIBLE DE CARACTERES PAR NOM D'ARTICLE
+!     JPLARD = LONGUEUR D'ARTICLE "PHYSIQUE" elementaire des Fichiers
+!              ( exprimee en mots, DOIT ETRE PAIRE, SUPERIEURE OU EGALE
+!                a JPLDOC, JPLARD*JPNCMO DOIT ETRE MULTIPLE DE JPNCPN )
+!     JPLARC = Longueur d'article "physique" exprimee en caracteres
+!     JPRECL = PARAMETRE "RECL" de base POUR "OPEN" DES FICHIERS
+!     JPNXFI = NOMBRE MAXIMUM DE FICHIERS INDEXES OUVERTS SIMULTANEMENT
+!              (1 fichier de "multiplicite" N comptant comme N fichiers)
+!     JPFACX = FACteur multiplicateur maXimum entre longueur d'article
+!              physique effective et elementaire ( de 1 a JPNXFI )
+!     JPXUFM = Nombre maXimum d'Unites logiques a Facteur Mul. predefini
+!     JPNPIA = NOMBRE DE *PAIRES* DE "PAGES D'INDEX" EN MEMOIRE
+!              *PREALLOUEES* PAR UNITE LOGIQUE ( AU MOINS *4* )
+!     JPNXPI = NOMBRE TOTAL DE *PAIRES* DE "PAGES D'INDEX" EN MEMOIRE
+!              ALLOUABLES ( DOIT ETRE AU MOINS EGAL A JPNPIA*JPNXFI )
+!     JPNPIS = NOMBRE DE *PAIRES* DE "PAGES D'INDEX" NON PREALLOUEES
+!     JPNXNA = NOMBRE MAXI. DE NOMS D'ARTICLES PAR PAGE/ARTICLE D'INDEX
+!     JPNBLP = NOMBRE MAXI. DE COUPLES (LONGUEUR/POSITION)"   "     "
+!     JPNAPP = NOMBRE MAXI. UTILE DE NOMS D'ARTICLES PAR PAGE/AR D'INDEX
+!     JPLDOC = LONGUEUR (MOTS) DE LA PARTIE DOCUMENTAIRE DU 1ER ARTICLE
+!     JPNPDF = NOMBRE DE PAGES DE DONNEES PAR FICHIER OUVERT ( >= 2 )
+!     JPNXPR = NOMBRE MAXIMUM DE PAIRES D'ARTICLES D'INDEX RESERVABLES
+!     JPNIL  = CODE DE "VALEUR ABSENTE" POUR CERTAINES TABLES D'ENTIERS.
+!     JPNMPN = NOMBRE DE MOTS NECESSAIRE AU STOCKAGE D'UN NOM D'ARTICLE
+!     JPNAPX = JPNAPP*JPFACX
+!     JPLARX = JPLARD*JPFACX = longueur d'article physique maximale
+!     JPLFTX = Longueur maximale traitable des noms de fichiers.
+!     JPLFIX =    "        "     imprimable "   "   "     "    .
+!     JPLSPX =    "        "   des noms des sous-programmes du logiciel.
+!     JPLSTX =    "     "  des valeurs du "STATUS" FORTRAN (open/close).
+!     JPCFMX = Nombre maximum de ConFigurations pour iMport/eXport.
+!     JPIMEX =    "     "  de fichiers imp/exportables "simultanement".
+!     JPDEXP = Dimension tableau Descripteurs EXPlicites d'imp/export.
+!     JPDIMP =     "        "         "       IMPlicites "  "    "   .
+!     JPXDAM = Nombre maXimum noms D'Articles d'imp/export en Memoire.
+!     JPXCIE =    "     "     de Caracteres par nom pour Import/Export.
+!     JPXMET =    "     "     "      "       "   "  avec METacaracteres.
+!     JPXCCF =    "     "     "      "      des noms de ConFig. imp/exp.
+!     JPTYMX =    "   de TYpes de variables valides pour Import/Export.
+!
+!
+!
+      INTEGER (KIND=JPLIKB), PARAMETER :: JPLSTX = 7
+      INTEGER (KIND=JPLIKB), PARAMETER :: JPNBST = 4
+      INTEGER (KIND=JPLIKB), PARAMETER :: JPNCPN = 16
+      INTEGER (KIND=JPLIKB), PARAMETER :: JPLFTX = 512
+      INTEGER (KIND=JPLIKB), PARAMETER :: JPXCCF = 16
+      INTEGER (KIND=JPLIKB), PARAMETER :: JPXMET = 2 * JPNCPN
+      INTEGER (KIND=JPLIKB), PARAMETER :: JPTYMX = 5
+      INTEGER (KIND=JPLIKB), PARAMETER :: JPLSPX = 6
+
+!
+!---------- VARIABLES LOGIQUES A CHARGER ABSOLUMENT PARTOUT ------------
+!
+!     LMISOP = VRAI SI ON DOIT TRAVAILLER EN MODE MISE AU POINT LOGICIEL
+!     LFRANC = Vrai/Faux si la messagerie doit etre en francais/anglais
+!
+!
+!-------- DESCRIPTION DE LA PARTIE DOCUMENTAIRE DU 1ER ARTICLE ---------
+!
+!     MOT  1 ==> LONGUEUR "PHYSIQUE" Effective DES ARTICLES (EN MOTS)
+!     MOT  2 ==> LONGUEUR MAXIMUM DES NOMS D'ARTICLES (CARACTERES)
+!     MOT  3 ==> "DRAPEAU" SIGNALANT SI LE FICHIER A BIEN ETE FERME
+!                APRES LA DERNIERE MODIFICATION
+!     MOT  4 ==> LONGUEUR DE LA PARTIE DOCUMENTAIRE DU FICHIER
+!     MOT  5 ==> NOMBRE D'ARTICLES "PHYSIQUES" DANS LE FICHIER
+!     MOT  6 ==>    "        "      LOGIQUES    "    "    "
+!                (Y COMPRIS LES "TROUS" CREES PAR LES REECRITURES
+!                 D'ARTICLES PLUS LONGUES QUE PRECEDEMMENT, ET N'AYANT
+!                 PAS ENCORE PU ETRE REUTILISES, COMPTES DANS LE MOT 21)
+!     MOT  7 ==> LONGUEUR MINI. DES ARTICLES LOGIQUES DE DONNEES (MOTS)
+!     MOT  8 ==>    "     MAXI.  "     "         "     "    "      "
+!     MOT  9 ==>    "     TOTALE "     "         "     "    "      "
+!     MOT 10 ==> NOMBRE DE REECRITURES SUR PLACE (VRAIES)
+!     MOT 11 ==>   "     "      "      PLUS COURTES
+!     MOT 12 ==>   "     "      "       "   LONGUES
+!     MOT 13 ==> NOMBRE MAXIMUM D'ARTICLES PAR PAGE OU ARTICLE D'INDEX
+!     MOT 14 ==> DATE DE LA CREATION DU FICHIER (1ERE OUVERTURE)
+!     MOT 15 ==> HEURE "  "    "     "     "    (  "      "    )
+!     MOT 16 ==> DATE DE LA DERNIERE MODIFICATION GARANTIE (FERMETURE)
+!     MOT 17 ==> HEURE "  "    "          "           "    (    "    )
+!     MOT 18 ==> DATE DE LA 1ERE MODIFICATION PAS FORCEMENT GARANTIE
+!     MOT 19 ==> HEURE "  "    "      "        "      "        "
+!       (LES MODIFICATIONS NE SONT GARANTIES QUE SI LE MOT 4 VAUT ZERO)
+!     MOT 20 ==> NOMBRE DE PAIRES D'ARTICLES D'INDEX PRERESERVES .
+!     MOT 21 ==> NOMBRE DE "TROUS" CORRESP. A DES REECRITURES + LONGUES
+!                ( AVANT OUVERTURE )
+!     MOT 22 ==> NUMERO D'ARTICLE MAXI. DES ARTICLES PHYSIQ. DE DONNEES
+!
+!------ "PARAMETER" DECRIVANT LES POSITIONS DES ENTITES CI-DESSUS ------
+!
+!
+!
+!
+!--- DESCRIPTIF DES TABLES CONCERNANT LES (PAIRES DE) PAGES D'INDEX ----
+!                       ( ALIAS "P.P.I." )
+!
+!     CNOMAR = TABLE DES PAGES D'INDEX DE TYPE "NOMS D'ARTICLES"
+!     MLGPOS = TABLE DES PAGES D'INDEX DE TYPE "LONGUEUR/POSITION"
+!     MRGPIF = TABLE DES RANGS DES P.P.I. DANS LEUR FICHIER RESPECTIF
+!     MCOPIF = TABLE DE CORRESPONDANCE PAGES D'INDEX/UNITES LOGIQUES
+!     MRGPIM = TABLE DES RANGS EN MEMOIRE DES P.P.I. AFFECTEES
+!              ( DANS *MCOPIF,MRGPIF,CNOMAR,MLGPOS,LECRPI,LPHASP* )
+!     LECRPI = VRAI SI LA PAGE D'INDEX CORRESP. DOIT ETRE (RE)ECRITE
+!              (.,1) ==> PAGE "NOM", (.,2) ==> PAGE "LONGUEUR/POSITION"
+!     LPHASP = VRAI SI LA PAGE D'INDEX "LONG/POS" EST PHASEE EN MEMOIRE
+!              AVEC LA PAGE D'INDEX "NOM" CORRESPONDANTE
+!
+!---------------- VARIABLES "SIMPLES" GLOBALES -------------------------
+!
+!     NBFIOU = Nombre d'Unites Logiques ouvertes
+!     NFACTM = Somme des Facteurs Multiplicatifs utilises
+!     NIMESG = NIVEAU *GLOBAL* DE LA MESSAGERIE
+!     NERFAG = NIVEAU DE FILTRAGE GLOBAL DES ERREURS FATALES
+!     NISTAG = NIVEAU D'IMPRESSION GLOBAL DES STATISTIQUES
+!     NPISAF = NBRE DE PAIRES DE PAGES D'INDEX SUPPLEMENTAIRES AFFECTEES
+!     LMULTI = VRAI SI ON DOIT TRAVAILLER EN MODE MULTI-TACHES
+!     LTAMLG = OPTION PAR DEFAUT D'UTILISATION DE LA MEMOIRE TAMPON EN
+!              LECTURE; VRAIE ==> UTILISATION MAXIMUM
+!     LTAMEG = CF. CI-DESSUS, EN ECRITURE
+!     VERGLA = VERROU GLOBAL (EN MULTI-TASKING)
+!     NULOFM = Nombre d'Unites LOgiques a Facteur Multiplicat. predefini
+!     CHINCO = Nom par defaut d'une variable qui devrait etre CHaracter
+!     NUIMEX = Nombre d'Unites LOgiques en cours d'IMport/EXport
+!
+!--------- DESCRIPTIF DES ELEMENTS CONCERNANT UNE UNITE LOGIQUE --------
+!
+!     NUMIND = TABLE D'ADRESSAGE INDIRECT DANS LES TABLEAUX CI-DESSOUS
+!     NUMERO = NUMERO DE L'UNITE LOGIQUE
+!     MFACTM = FACteur Multiplicatif de la longueur physique elementaire
+!     CNOMFI = NOM eventuel du FIchier associe a l'unite logique
+!     CNOMSY = Idem pour le systeme, ou a defaut pour l'utilisateur.
+!     NLNOMF = LONGUEUR (CARACTERES) DU NOM EVENTUEL
+!     NLNOMS = Longueur (en caracteres) du Nom SYSTEME eventuel
+!     NDEROP = CODE DE LA DERNIERE ACTION EFFECTUEE
+!     CSTAOP = 'STATUS' DE L'OUVERTURE
+!     LNOUFI = VRAI SI LE FICHIER EST NOUVEAU (AU SENS DU LOGICIEL)
+!     LMODIF =  "   "   "    "    A ETE MODIFIE DEPUIS L'OUVERTURE
+!     NDERCO = DERNIER CODE-REPONSE (CORRESPONDANT A LA DERNIERE ACTION)
+!     MTAMPD = PAGES DE DONNEES "TAMPON"
+!     NUMAPD = NUMERO D'ARTICLE PHYSIQUE CORRESPONDANT A CES PAGES
+!     LECRPD = VRAI SI LA PAGE DE DONNEES CORRESP. DOIT ETRE ECRITE
+!     NLONPD = LONGUEUR DE PAGE DE DONNEES REELLEMENT REMPLIE
+!     NDERPD = NUMERO DE LA DERNIERE PAGE DE DONNEES UTILISEE
+!     NPODPI = RANG DE LA DERNIERE PAGE D'INDEX DANS LA TABLE *MRGPIM*
+!     NALDPI = NOMBRE D'ARTICLES LOGIQUES DANS LA DERNIERE PAGE D'INDEX
+!     NBLECT =    "   DE LECTURES          EFFECTUEES DEPUIS L'OUVERTURE
+!     NBNECR =    "   "  NOUVELLES ECRITURES    "        "       "
+!     NREESP =    "   "  "VRAIES" REECRITURES SUR PLACE  "       "
+!     NREECO =    "   "  REECRITURES PLUS COURTES        "       "
+!     NREELO =    "   "       "      PLUS LONGUES        "       "
+!     NBRENO =    "   "  FOIS OU ON A RENOMME UN ARTICLE "       "
+!     NBSUPP =    "   "   "  " "  " " SUPPRIME "    "    "       "
+!     NBTROU =    "   "  TROUS D'INDEX CREES             "       "
+!     NIVMES = NIVEAU DE LA MESSAGERIE
+!     LERFAT = VRAI SI TOUTE ERREUR DOIT ETRE FATALE
+!     LISTAT = OPTION D'IMPRESSION DES STATISTIQUES ( A LA FERMETURE )
+!     VERRUE = VERROU DE L'UNITE LOGIQUE (EN MODE MULTI-TASKING)
+!     NPPIMM = NBRE DE PAIRES DE PAGES D'INDEX EN MEMOIRE
+!     MDES1D = TABLE CONTENANT LE 1ER ARTICLE ("DESCRIPTIF")
+!     NTRULZ = NOMBRE DE TROUS D'INDEX DE LONGUEUR NULLE
+!     NRFPTZ = RANG PREMIERE ARTICLE AYANT LA CARACTERISTIQUE CI-DESSUS
+!     NRFDTZ =   "  DERNIER     "    "    "         "         "
+!     NBREAD = NOMBRE DE "READ" FORTRAN REELLEMENT EXECUTES  (DEPUIS L'
+!     NBWRIT =    "      "WRITE"   "        "         "       OUVERTURE)
+!     NBMOLU = NOMBRE DE MOTS UTILISATEUR LUS   CORRECTEMENT (DEPUIS L'
+!     NBMOEC =    "    "   "       "      ECRITS     "        OUVERTURE)
+!     LTAMPL = OPTION D'UTILISATION MAXI DE LA MEMOIRE TAMPON EN LECTURE
+!     LTAMPE =    "   "      "       "   "   "    "      "    " ECRITURE
+!     NDERGF = RANG DANS LE FICHIER DU DERNIER ARTICLE LOGIQUE LU
+!              ou dont on a demande les caracteristiques (LFICAS/LFICAP)
+!     CNDERA = NOM de ce dernier article logique de donnees
+!     NSUIVF = RANG DANS LE FICHIER DU PROCHAIN ARTICLE LOGIQUE A LIRE
+!              "SEQUENTIELLEMENT"
+!     NPRECF = RANG DANS LE FICHIER DU PROCHAIN ARTICLE LOGIQUE
+!              "PRECEDENT" A LIRE
+!     LMIMAL = VRAI SI ON DOIT RECALCULER LES LONGUEURS MINI. ET MAXI.
+!              DES ARTICLES LOGIQUES DE DONNEES
+!     NUMAPH = NUMero d'Article PHysique (pour messages d'erreur E/S).
+!     NEXPOR = Rang eventuel (d'EXPORt) dans les tables MNUIEX,NDIMPL,
+!     NIMPOR =  "      "     (d'IMPORt) NDEXPL,NREXPL,CNEXPL,NIMPEX...
+!
+!------------------------ VARIABLES DIVERSES ---------------------------
+!
+!     MULOFM = Table des Unites LOgiques avec Facteur Multip. predefini
+!     MFACTU =   "    "  FActeurs mUltiplicatifs associes a ces Unites
+!     MNUIEX =   "    "  Numeros d'Unites logiques en Import/EXport
+!     NINIEX =   "   d'adressage INdirect dans MNUIEX
+!     NDIMPL = Descripteurs IMPLicites d'import/export en memoire
+!     NDEXPL =      "       EXPLicites "   "   /  "    "     "
+!     CNIMPL = Profil des articles a description IMPLicite
+!     NAEXPL = Nombre d'articles decrits EXPLicitement
+!     CNEXPL = Noms des articles decrits dans NDEXPL
+!     NREXPL = Rang  "      "       "      "  NDEXPL
+!     NIMPEX = Numero d'unite logique associee a l'IMPort ou l'EXport.
+!     NUTRAV =    "   "   "      "    de TRAVail pour import ou export.
+!     NLAPFD = Longueur d'Article Physique du fichier d'export/import.
+!     NXCNLD = Nb.maX. Caracteres/Nom d'article du logiciel LFI Distant.
+!     NRCFMX = Rang de la config. Imp/eXport dans CFGMXD, NBMOSD, NBCASD
+!     CFGMXD = ConFiGuration pour iMport/eXport des systemes Distants.
+!     NBMOSD = Nombre de Bits par MOt       des systemes Distants.
+!     NBCASD =    "   "    "   "  CAractere  "     "        "    .
+!     CTYPMX = Liste des types de variables valides pour Import/eXport.
+!
+      TYPE LFICRW
+        SEQUENCE
+! C file pointer
+        INTEGER (KIND=JPIA) :: N_C_FPDESC = 0
+! File offset (start from zero)
+        INTEGER (KIND=JPIB) :: N_C_OFFSET = 0
+! File requires byte-swapping
+        LOGICAL             :: L_C_BTSWAP = .FALSE.
+! File name
+        CHARACTER*(JPLFTX), POINTER :: CNOMFI => NULL ()
+      END TYPE LFICRW
+
+      TYPE LFICOM
+      SEQUENCE
+      CHARACTER (LEN=8)   :: CMAGIC = "LFI_FORT"
+      INTEGER (KIND=JPIA) :: ILFICC = 0_JPIA
+! lficom0
+      INTEGER (KIND=JPLIKB) JPNBIM, JPNBIC, JPNCPN, JPLARD
+      INTEGER (KIND=JPLIKB) JPNPDF, JPXUFM, JPNXFI
+      INTEGER (KIND=JPLIKB) JPNPIA, JPNXPI, JPNXPR, JPLDOC
+      INTEGER (KIND=JPLIKB) JPNIL, JPNCMO, JPLARC
+      INTEGER (KIND=JPLIKB) JPXMET, JPRECL, JPFACX, JPLFTX
+      INTEGER (KIND=JPLIKB) JPLFIX, JPLSPX, JPLSTX
+      INTEGER (KIND=JPLIKB) JPIMEX, JPDEXP, JPDIMP, JPXDAM
+      INTEGER (KIND=JPLIKB) JPXCIE, JPCFMX, JPXCCF
+      INTEGER (KIND=JPLIKB) JPNXNA, JPNBLP, JPNAPP, JPNPIS
+      INTEGER (KIND=JPLIKB) JPNAPX, JPNMPN, JPLARX
+      INTEGER (KIND=JPLIKB) JPTYMX, JPNBST
+      LOGICAL LMISOP, LFRANC
+! lficom1
+      INTEGER (KIND=JPLIKB) JPLPAR, JPLMNA, JPFEAM, JPLLDO
+      INTEGER (KIND=JPLIKB) JPNAPH, JPNALO, JPLNAL
+      INTEGER (KIND=JPLIKB) JPLXAL, JPLTAL, JPNRES, JPNREC
+      INTEGER (KIND=JPLIKB) JPNREL, JPXAPI, JPDCRE
+      INTEGER (KIND=JPLIKB) JPHCRE, JPDDMG, JPHDMG, JPDMNG
+      INTEGER (KIND=JPLIKB) JPHMNG, JPNPIR, JPNTRU
+      INTEGER (KIND=JPLIKB) JPAXPD
+      CHARACTER*(JPNCPN), POINTER :: CNOMAR (:)     => NULL ()
+      CHARACTER*(JPNCPN), POINTER :: CNDERA (:)     => NULL ()
+      CHARACTER*(JPNCPN) CHINCO
+      CHARACTER*(JPLFTX), POINTER :: CNOMFI (:)     => NULL ()
+      CHARACTER*(JPLFTX), POINTER :: CNOMSY (:)     => NULL ()
+      CHARACTER*(JPLSTX), POINTER :: CSTAOP (:)     => NULL ()
+      CHARACTER*(JPNCPN), POINTER :: CNEXPL (:,:)   => NULL ()
+      CHARACTER*(JPTYMX) CTYPMX
+      CHARACTER*(JPXMET), POINTER :: CNIMPL (:)     => NULL ()
+      CHARACTER*(JPXCCF), POINTER :: CFGMXD (:)     => NULL ()
+!
+      INTEGER (KIND=JPLIKB) NBFIOU, NFACTM, NIMESG
+      INTEGER (KIND=JPLIKB) NERFAG, NISTAG, NPISAF, NULOFM
+      INTEGER (KIND=JPLIKB), POINTER :: MLGPOS (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: MTAMPD (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: MDES1D (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: MRGPIM (:,:) => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NDERPD (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: MCOPIF (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: MRGPIF (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NUMERO (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NLNOMF (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NLNOMS (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NDERCO (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NPODPI (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NUMAPH (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NALDPI (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NBLECT (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NREESP (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NREECO (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NBNECR (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NREELO (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NIVMES (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NDEROP (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NUMAPD (:,:) => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NLONPD (:,:) => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NPPIMM (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NRFDTZ (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NTRULZ (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NRFPTZ (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NBTROU (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NUMIND (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NBWRIT (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NBMOLU (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NBREAD (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NBMOEC (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NDERGF (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NSUIVF (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NBRENO (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NBSUPP (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NPRECF (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: MFACTM (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: MULOFM (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: MFACTU (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NIMPEX (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NUTRAV (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NBCASD (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NLAPFD (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: MNUIEX (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NINIEX (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NBMOSD (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NDEXPL (:,:) => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NDIMPL (:,:) => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NXCNLD (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NAEXPL (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NRCFMX (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NEXPOR (:)   => NULL ()
+      INTEGER (KIND=JPLIKB), POINTER :: NIMPOR (:)   => NULL ()
+      INTEGER (KIND=JPLIKB) NUIMEX
+      INTEGER (KIND=JPLIKB), POINTER :: NREXPL (:,:) => NULL ()
+!
+      REAL (KIND=JPDBLR), POINTER :: VERRUE (:) => NULL ()
+      REAL (KIND=JPDBLR) VERGLA
+!
+      LOGICAL LMULTI, LTAMLG, LTAMEG
+      LOGICAL, POINTER :: LECRPI (:,:) => NULL ()
+      LOGICAL, POINTER :: LTAMPL (:)   => NULL ()
+      LOGICAL, POINTER :: LTAMPE (:)   => NULL ()
+      LOGICAL, POINTER :: LMODIF (:)   => NULL ()
+      LOGICAL, POINTER :: LNOUFI (:)   => NULL ()
+      LOGICAL, POINTER :: LERFAT (:)   => NULL ()
+      LOGICAL, POINTER :: LISTAT (:)   => NULL ()
+      LOGICAL, POINTER :: LPHASP (:)   => NULL ()
+      LOGICAL, POINTER :: LECRPD (:,:) => NULL ()
+      LOGICAL, POINTER :: LMIMAL (:)   => NULL ()
+
+! subroutine saved variables
+      LOGICAL :: LFICFG_LLPREA = .TRUE.
+      CHARACTER (LEN=10) :: LFICHI_CLCHIF = '0123456789'
+      LOGICAL :: LFIDEB_LLPREA = .TRUE.
+      LOGICAL :: LFIFMD_LLPREA = .TRUE.
+      LOGICAL :: LFIFRA_LLPREA = .TRUE.
+      LOGICAL :: LFIINI_LLPREA = .TRUE., LFIINI_LLDEFM = .FALSE.
+      LOGICAL :: LFINEG_LLPREA = .TRUE.
+      LOGICAL :: LFINMG_LLPREA = .TRUE.
+      LOGICAL :: LFINSG_LLPREA = .TRUE.
+      LOGICAL :: LFINUM_LLPREA = .TRUE.
+      LOGICAL :: LFIOEG_LLPREA = .TRUE.
+      LOGICAL :: LFIOFD_LLPREA = .TRUE.
+      LOGICAL :: LFIOMG_LLPREA = .TRUE.
+      LOGICAL :: LFIOSG_LLPREA = .TRUE.
+      CHARACTER*(JPLSTX) :: LFIOUV_CLSTEX (JPNBST)
+
+      INTEGER (KIND=JPLIKB) LFIRAC_JPDEBN
+
+      INTEGER (KIND=JPLIKB) :: NULOUT = 0
+      INTEGER (KIND=JPLIKB) :: JPLMES = 1024
+
+      TYPE (LFICRW), POINTER :: YLFIC (:) => NULL ()
+
+      END TYPE LFICOM
+
+
+      TYPE (LFICOM), SAVE, TARGET :: LFICOM_DEFAULT
+      LOGICAL, SAVE :: LFICOM_DEFAULT_INIT = .FALSE.
+
+      CONTAINS
+
+      SUBROUTINE NEW_LFI_DEFAULT ()
+      INTEGER :: IERR
+      REAL (KIND=JPRB) :: ZHOOK_HANDLE
+
+      IF (LHOOK) CALL DR_HOOK ('LFICOM:NEW_LFI_DEFAULT',0,ZHOOK_HANDLE)
+
+      IF (.NOT. LFICOM_DEFAULT_INIT) THEN
+        CALL NEW_LFI (LFICOM_DEFAULT, IERR)
+        LFICOM_DEFAULT_INIT = .TRUE.
+      ENDIF
+
+      IF (LHOOK) CALL DR_HOOK ('LFICOM:NEW_LFI_DEFAULT',1,ZHOOK_HANDLE)
+
+      END SUBROUTINE NEW_LFI_DEFAULT
+
+      SUBROUTINE NEW_LFI (LFI, KERR, KPNXFI, KPFACX)
+      TYPE (LFICOM) :: LFI
+      INTEGER, INTENT(OUT) :: KERR
+      INTEGER, OPTIONAL, INTENT(IN) :: KPNXFI
+      INTEGER, OPTIONAL, INTENT(IN) :: KPFACX
+      REAL (KIND=JPRB) :: ZHOOK_HANDLE
+
+      IF (LHOOK) CALL DR_HOOK ('LFICOM:NEW_LFI',0,ZHOOK_HANDLE)
+
+      KERR = 0
+
+      LFI%JPLSTX = JPLSTX
+      LFI%JPNBST = JPNBST
+      LFI%JPNCPN = JPNCPN
+      LFI%JPLFTX = JPLFTX
+
+      LFI%JPLARD=512 
+      LFI%JPNPDF=20 
+      LFI%JPXUFM=100 
+      LFI%JPNPIA=4 
+      LFI%JPNXPR=100
+
+
+#ifdef HIGHRES
+      LFI%JPNXFI=300 
+      LFI%JPFACX=120
+#else
+      LFI%JPNXFI=50 
+      LFI%JPFACX=20
+#endif
+
+
+      IF (PRESENT (KPNXFI)) LFI%JPNXFI = INT (KPNXFI, JPLIKB)
+      IF (PRESENT (KPFACX)) LFI%JPFACX = INT (KPFACX, JPLIKB)
+
+!
+!     Implementation-dependent symbolic constants (except for JPNCMO and
+!     JPLARC definitions, which are there to have only one set of
+!     "ifdef" in current header).
+!
+#if defined ( DEC )
+      LFI%JPNBIM=64 
+      LFI%JPNBIC=8 
+      LFI%JPNCMO=LFI%JPNBIM/LFI%JPNBIC
+      LFI%JPLARC=LFI%JPNCMO*LFI%JPLARD
+      LFI%JPRECL=2*LFI%JPLARD 
+#elif defined ( HPPA )
+      LFI%JPNBIM=32
+      LFI%JPNBIC=8 
+      LFI%JPNCMO=LFI%JPNBIM/LFI%JPNBIC 
+      LFI%JPLARC=LFI%JPNCMO*LFI%JPLARD
+      LFI%JPRECL=LFI%JPLARC
+#else
+!     Notice : record length should be in BYTES for the computer system
+      LFI%JPNBIM=64 
+      LFI%JPNBIC=8 
+      LFI%JPNCMO=LFI%JPNBIM/LFI%JPNBIC
+      LFI%JPLARC=LFI%JPNCMO*LFI%JPLARD 
+      LFI%JPRECL=LFI%JPLARC 
+#endif
+
+      LFI%JPLDOC=22
+      LFI%JPNIL=-999
+      LFI%JPXMET=JPXMET
+      LFI%JPCFMX=4
+      LFI%JPNXPI=LFI%JPNPIA*LFI%JPNXFI+2*LFI%JPFACX
+      LFI%JPXCIE=2*LFI%JPNCPN
+      LFI%JPLFIX=128
+      LFI%JPLSPX=JPLSPX
+      LFI%JPLSTX=7
+      LFI%JPTYMX=JPTYMX
+      LFI%JPIMEX=2
+      LFI%JPDEXP=10000
+      LFI%JPDIMP=1000
+      LFI%JPXDAM=1000
+      LFI%JPNXNA=(LFI%JPLARD*LFI%JPNCMO)/LFI%JPNCPN
+      LFI%JPNBLP=LFI%JPLARD/2
+      LFI%JPNAPP=(LFI%JPNBLP*(LFI%JPNXNA/LFI%JPNBLP)+LFI%JPNXNA* &
+     &  (LFI%JPNBLP/LFI%JPNXNA))/(LFI%JPNXNA/                    &
+     &   LFI%JPNBLP+LFI%JPNBLP/LFI%JPNXNA)
+      LFI%JPXCCF=JPXCCF
+      LFI%JPNPIS=LFI%JPNXPI-LFI%JPNPIA*LFI%JPNXFI
+      LFI%JPNAPX=LFI%JPNAPP*LFI%JPFACX
+      LFI%JPNMPN=1+(LFI%JPNCPN-1)/LFI%JPNCMO
+      LFI%JPLARX=LFI%JPLARD*LFI%JPFACX
+      LFI%JPLPAR=1
+      LFI%JPLMNA=2
+      LFI%JPFEAM=3
+      LFI%JPLLDO=4
+      LFI%JPNAPH=5
+      LFI%JPNALO=6
+      LFI%JPLNAL=7
+      LFI%JPLXAL=8
+      LFI%JPLTAL=9
+      LFI%JPNRES=10
+      LFI%JPNREC=11
+      LFI%JPNREL=12
+      LFI%JPXAPI=13
+      LFI%JPDCRE=14
+      LFI%JPHCRE=15
+      LFI%JPDDMG=16
+      LFI%JPHDMG=17
+      LFI%JPDMNG=18
+      LFI%JPHMNG=19
+      LFI%JPNPIR=20
+      LFI%JPNTRU=21
+      LFI%JPAXPD=22
+
+      LFI%LFIRAC_JPDEBN=(LFI%JPNMPN*(2/LFI%JPNMPN)+2*(LFI%JPNMPN/2)) &
+     &                  /((LFI%JPNMPN/2)+(2/LFI%JPNMPN))
+
+      LFI%LFIOUV_CLSTEX = ''
+      LFI%LFIOUV_CLSTEX(1) = 'OLD'
+      LFI%LFIOUV_CLSTEX(2) = 'NEW'
+      LFI%LFIOUV_CLSTEX(3) = 'UNKNOWN'
+      LFI%LFIOUV_CLSTEX(4) = 'SCRATCH'
+
+      ALLOCATE (LFI%YLFIC (LFI%JPNXFI), &
+     &          STAT = KERR)
+      IF (KERR /= 0) GOTO 999
+
+      ALLOCATE (                                                    &
+     & LFI%CNOMAR (LFI%JPNXNA*LFI%JPNXPI), LFI%CNDERA (LFI%JPNXFI), &
+     & LFI%CNOMFI (LFI%JPNXFI), LFI%CNOMSY (LFI%JPNXFI),            &
+     & LFI%CSTAOP (LFI%JPNXFI), LFI%CNEXPL (LFI%JPXDAM,LFI%JPIMEX), &
+     & LFI%CNIMPL (LFI%JPIMEX), LFI%CFGMXD (0:LFI%JPCFMX),          &
+     & LFI%MLGPOS (LFI%JPLARD*LFI%JPNXPI),                          &
+     & LFI%MTAMPD (LFI%JPLARD*LFI%JPNPDF*LFI%JPNXFI),               &
+     & LFI%MDES1D (LFI%JPLARD*LFI%JPNXFI),                          &
+     & LFI%MRGPIM (LFI%JPNPIA+LFI%JPNPIS,LFI%JPNXFI),               &
+     & LFI%NDERPD (LFI%JPNXFI), LFI%MCOPIF (LFI%JPNXPI),            &
+     & LFI%MRGPIF (LFI%JPNXPI), LFI%NLNOMS (LFI%JPNXFI),            &
+     & LFI%NUMERO (LFI%JPNXFI), LFI%NLNOMF (LFI%JPNXFI),            &
+     & LFI%NDERCO (LFI%JPNXFI), LFI%NPODPI (LFI%JPNXFI),            &
+     & STAT = KERR )
+      IF (KERR /= 0) GOTO 999
+
+      LFI%CNOMAR = ''; LFI%CNDERA = ''; LFI%CNOMFI  = '';
+      LFI%CNOMSY = ''; LFI%CSTAOP = ''; LFI%CNEXPL  = '';
+      LFI%CNIMPL = ''; LFI%CFGMXD = ''; LFI%MLGPOS  =  0;
+      LFI%MTAMPD =  0; LFI%MDES1D =  0; LFI%MRGPIM  =  0;
+      LFI%NDERPD =  0; LFI%MCOPIF =  0; LFI%MRGPIF  =  0;
+      LFI%NLNOMS =  0; LFI%NUMERO =  0; LFI%NLNOMF  =  0;
+      LFI%NDERCO =  0; LFI%NPODPI =  0; 
+
+      ALLOCATE (                                                         &
+     & LFI%NUMAPH (0:LFI%JPNXFI), LFI%NALDPI (LFI%JPNXFI),               &
+     & LFI%NBLECT (LFI%JPNXFI), LFI%NBNECR (LFI%JPNXFI),                 &
+     & LFI%NREESP (LFI%JPNXFI), LFI%NREECO (LFI%JPNXFI),                 &
+     & LFI%NREELO (LFI%JPNXFI), LFI%NIVMES (0:LFI%JPNXFI),               &
+     & LFI%NDEROP (LFI%JPNXFI), LFI%NPPIMM (LFI%JPNXFI),                 &
+     & LFI%NUMAPD (0:LFI%JPNPDF-1,LFI%JPNXFI),                           &
+     & LFI%NLONPD (0:LFI%JPNPDF-1,LFI%JPNXFI), LFI%NTRULZ (LFI%JPNXFI),  &
+     & LFI%NRFPTZ (LFI%JPNXFI), LFI%NRFDTZ (LFI%JPNXFI),                 &
+     & LFI%NBTROU (LFI%JPNXFI), LFI%NUMIND (LFI%JPNXFI),                 &
+     & LFI%NBREAD (LFI%JPNXFI), LFI%NBWRIT (LFI%JPNXFI),                 &
+     & LFI%NBMOLU (LFI%JPNXFI), LFI%NBMOEC (LFI%JPNXFI),                 &
+     & STAT = KERR )
+      IF (KERR /= 0) GOTO 999
+
+      LFI%NUMAPH = 0; LFI%NALDPI = 0; LFI%NBLECT = 0;
+      LFI%NBNECR = 0; LFI%NREESP = 0; LFI%NREECO = 0;
+      LFI%NREELO = 0; LFI%NIVMES = 0; LFI%NDEROP = 0;
+      LFI%NPPIMM = 0; LFI%NUMAPD = 0; LFI%NLONPD = 0;
+      LFI%NTRULZ = 0; LFI%NRFPTZ = 0; LFI%NRFDTZ = 0;
+      LFI%NBTROU = 0; LFI%NUMIND = 0; LFI%NBREAD = 0;
+      LFI%NBWRIT = 0; LFI%NBMOLU = 0; LFI%NBMOEC = 0;
+
+      ALLOCATE (                                                     &
+     & LFI%NDERGF (LFI%JPNXFI), LFI%NSUIVF (LFI%JPNXFI),             &
+     & LFI%NPRECF (LFI%JPNXFI), LFI%NBRENO (LFI%JPNXFI),             &
+     & LFI%NBSUPP (LFI%JPNXFI), LFI%MFACTM (0:LFI%JPNXFI),           &
+     & LFI%MULOFM (LFI%JPXUFM), LFI%MFACTU (0:LFI%JPXUFM),           &
+     & LFI%NIMPEX (LFI%JPIMEX), LFI%NUTRAV (LFI%JPIMEX),             &
+     & LFI%NBMOSD (0:LFI%JPCFMX), LFI%NBCASD (0:LFI%JPCFMX),         &
+     & LFI%NLAPFD (LFI%JPIMEX), LFI%MNUIEX (LFI%JPIMEX),             &
+     & LFI%NINIEX (LFI%JPIMEX), LFI%NDEXPL (LFI%JPDEXP,LFI%JPIMEX),  &
+     & LFI%NDIMPL (LFI%JPDIMP,LFI%JPIMEX), LFI%NXCNLD (LFI%JPIMEX),  &
+     & STAT = KERR )
+      IF (KERR /= 0) GOTO 999
+
+      LFI%NDERGF = 0; LFI%NSUIVF = 0; LFI%NPRECF = 0;
+      LFI%NBRENO = 0; LFI%NBSUPP = 0; LFI%MFACTM = 0;
+      LFI%MULOFM = 0; LFI%MFACTU = 0; LFI%NIMPEX = 0;
+      LFI%NUTRAV = 0; LFI%NBMOSD = 0; LFI%NBCASD = 0;
+      LFI%NLAPFD = 0; LFI%MNUIEX = 0; LFI%NINIEX = 0;
+      LFI%NDEXPL = 0; LFI%NDIMPL = 0; LFI%NXCNLD = 0;
+
+      ALLOCATE (                                                        &
+     & LFI%NAEXPL (LFI%JPIMEX), LFI%NEXPOR (LFI%JPNXFI),                &
+     & LFI%NIMPOR (LFI%JPNXFI), LFI%NRCFMX (LFI%JPIMEX),                &
+     & LFI%NREXPL (0:LFI%JPXDAM,LFI%JPIMEX), LFI%VERRUE (LFI%JPNXFI),   &
+     & LFI%LECRPI (LFI%JPNXPI,2), LFI%LTAMPL (LFI%JPNXFI),              &
+     & LFI%LTAMPE (LFI%JPNXFI), LFI%LMODIF (LFI%JPNXFI),                &
+     & LFI%LNOUFI (LFI%JPNXFI), LFI%LERFAT (0:LFI%JPNXFI),              &
+     & LFI%LISTAT (LFI%JPNXFI), LFI%LPHASP (LFI%JPNXPI),                &
+     & LFI%LECRPD (0:LFI%JPNPDF-1,LFI%JPNXFI), LFI%LMIMAL (LFI%JPNXFI), &
+     & STAT = KERR )
+      IF (KERR /= 0) GOTO 999
+
+      LFI%NAEXPL = 0; LFI%NEXPOR = 0; LFI%NIMPOR = 0;
+      LFI%NRCFMX = 0; LFI%NREXPL = 0; LFI%VERRUE = 0.;
+      LFI%LECRPI = .FALSE.; LFI%LTAMPL = .FALSE.;
+      LFI%LTAMPE = .FALSE.; LFI%LMODIF = .FALSE.;
+      LFI%LNOUFI = .FALSE.; LFI%LERFAT = .FALSE.;
+      LFI%LISTAT = .FALSE.; LFI%LPHASP = .FALSE.;
+      LFI%LECRPD = .FALSE.; LFI%LMIMAL = .FALSE.;
+
+ 999  CONTINUE
+
+      IF (LHOOK) CALL DR_HOOK ('LFICOM:NEW_LFI',1,ZHOOK_HANDLE)
+
+      END SUBROUTINE NEW_LFI
+
+      SUBROUTINE FREE_LFI (LFI, KERR)
+      TYPE (LFICOM) :: LFI
+      INTEGER, INTENT(OUT) :: KERR
+      REAL (KIND=JPRB) :: ZHOOK_HANDLE
+
+      IF (LHOOK) CALL DR_HOOK ('LFICOM:FREE_LFI',0,ZHOOK_HANDLE)
+
+      KERR = 0
+
+      DEALLOCATE (LFI%YLFIC, &
+     &            STAT = KERR)
+      IF (KERR .NE. 0) GOTO 999
+
+      DEALLOCATE (              &
+     & LFI%CNOMAR, LFI%CNDERA,  &
+     & LFI%CNOMFI, LFI%CNOMSY,  &
+     & LFI%CSTAOP, LFI%CNEXPL,  &
+     & LFI%CNIMPL, LFI%CFGMXD,  &
+     & LFI%MLGPOS,              &
+     & LFI%MTAMPD,              &
+     & LFI%MDES1D,              &
+     & LFI%MRGPIM,              &
+     & LFI%NDERPD, LFI%MCOPIF,  &
+     & LFI%MRGPIF, LFI%NLNOMS,  &
+     & LFI%NUMERO, LFI%NLNOMF,  &
+     & LFI%NDERCO, LFI%NPODPI,  &
+     & STAT = KERR )
+      IF (KERR .NE. 0) GOTO 999
+
+      DEALLOCATE (              &
+     & LFI%NUMAPH, LFI%NALDPI,  &
+     & LFI%NBLECT, LFI%NBNECR,  &
+     & LFI%NREESP, LFI%NREECO,  &
+     & LFI%NREELO, LFI%NIVMES,  &
+     & LFI%NDEROP, LFI%NPPIMM,  &
+     & LFI%NUMAPD,              &
+     & LFI%NLONPD, LFI%NTRULZ,  &
+     & LFI%NRFPTZ, LFI%NRFDTZ,  &
+     & LFI%NBTROU, LFI%NUMIND,  &
+     & LFI%NBREAD, LFI%NBWRIT,  &
+     & LFI%NBMOLU, LFI%NBMOEC,  &
+     & STAT = KERR )
+      IF (KERR .NE. 0) GOTO 999
+
+      DEALLOCATE (              &
+     & LFI%NDERGF, LFI%NSUIVF,  &
+     & LFI%NPRECF, LFI%NBRENO,  &
+     & LFI%NBSUPP, LFI%MFACTM,  &
+     & LFI%MULOFM, LFI%MFACTU,  &
+     & LFI%NIMPEX, LFI%NUTRAV,  &
+     & LFI%NBMOSD, LFI%NBCASD,  &
+     & LFI%NLAPFD, LFI%MNUIEX,  &
+     & LFI%NINIEX, LFI%NDEXPL,  &
+     & LFI%NDIMPL, LFI%NXCNLD,  &
+     & STAT = KERR )
+      IF (KERR .NE. 0) GOTO 999
+
+      DEALLOCATE (              &
+     & LFI%NAEXPL, LFI%NEXPOR,  &
+     & LFI%NIMPOR, LFI%NRCFMX,  &
+     & LFI%NREXPL, LFI%VERRUE,  &
+     & LFI%LECRPI, LFI%LTAMPL,  &
+     & LFI%LTAMPE, LFI%LMODIF,  &
+     & LFI%LNOUFI, LFI%LERFAT,  &
+     & LFI%LISTAT, LFI%LPHASP,  &
+     & LFI%LECRPD, LFI%LMIMAL,  &
+     & STAT = KERR )
+      IF (KERR .NE. 0) GOTO 999
+
+ 999  CONTINUE
+
+      IF (LFI%ILFICC /= 0) CALL LFI_HNDL_FREE (LFI)
+
+      IF (LHOOK) CALL DR_HOOK ('LFICOM:FREE_LFI',1,ZHOOK_HANDLE)
+
+      END SUBROUTINE FREE_LFI
+
+END MODULE LFIMOD
+
+

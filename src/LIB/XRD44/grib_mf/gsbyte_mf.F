@@ -1,0 +1,92 @@
+      SUBROUTINE GSBYTE_MF ( KS, KD, KOFF, KSIZE, KSKBTW, K, KBPW,      &
+     &                    CDADIR, KLENG, KERR, KWORD, LDNEXT )
+      USE PARKIND1, ONLY : JPRB
+      USE YOMHOOK , ONLY : LHOOK, DR_HOOK
+      USE LFI_PRECISION
+!
+      IMPLICIT NONE
+      INTEGER (KIND=JPLIKM), PARAMETER :: JPSHOR=100
+!
+!
+      INTEGER (KIND=JPLIKM) :: KOFF
+      INTEGER (KIND=JPLIKM) :: KSIZE
+      INTEGER (KIND=JPLIKM) :: KSKBTW
+      INTEGER (KIND=JPLIKM) :: K
+      INTEGER (KIND=JPLIKM) :: KBPW
+      INTEGER (KIND=JPLIKM) :: KLENG
+      INTEGER (KIND=JPLIKM) :: KERR
+      INTEGER (KIND=JPLIKM) :: KWORD
+!
+      INTEGER (KIND=JPLIKB) :: KS (*)
+      INTEGER (KIND=JPLIKB) :: KD (*)
+!
+      LOGICAL :: LDNEXT
+!
+      CHARACTER(LEN=1) :: CDADIR
+!
+      INTEGER (KIND=JPLIKM) :: IWORD, IOFF, IOFF2
+      INTEGER (KIND=JPLIKB) :: IMASKS (128)
+!
+      SAVE IMASKS
+!
+      DATA IMASKS(2) / 0 /
+!
+      REAL(KIND=JPRB) :: ZHOOK_HANDLE
+      IF (LHOOK) CALL DR_HOOK('GSBYTE_MF',0,ZHOOK_HANDLE)
+      KERR=0
+!
+      IF (K.GT.0) THEN
+        IOFF2=KOFF+(KSIZE+KSKBTW)*K
+!
+        IF (LDNEXT) THEN
+!
+          IWORD=KWORD+IOFF2/KBPW
+          IOFF=MOD (IOFF2,KBPW)
+        ELSE
+          IWORD=KWORD+(IOFF2-1)/KBPW
+          IOFF=1+MOD (IOFF2-1,KBPW)
+        ENDIF
+        IF (IWORD.GT.KLENG) THEN
+          KERR = -2
+          IF (CDADIR.EQ.'D') THEN
+            WRITE (UNIT=*,FMT=*)                                        &
+     &'GSBYTE - UNABLE TO PROCEED REQUESTED EXTRACTION FROM BIT STREAM:'
+          ELSE
+            WRITE (UNIT=*,FMT=*)                                        &
+     &'GSBYTE - UNABLE TO PROCEED REQUESTED INSERTION INTO BIT STREAM:'
+          ENDIF
+          IF (LDNEXT) THEN
+            WRITE (UNIT=*,FMT='('' GSBYTE - NEXT WORD'',I9,             &
+     &             '' WOULD BE OUTSIDE ARRAY BOUNDS'',I9)') IWORD,KLENG
+          ELSE
+            WRITE (UNIT=*,FMT='('' GSBYTE - LAST WORD'',I9,             &
+     &             '' WOULD BE OUTSIDE ARRAY BOUNDS'',I9)') IWORD,KLENG
+          ENDIF
+          IF (LHOOK) CALL DR_HOOK('GSBYTE_MF',1,ZHOOK_HANDLE)
+          RETURN
+        ENDIF
+      ELSE
+        IWORD=KWORD
+        IOFF=KOFF
+      ENDIF
+!     Vector machines use preferably GSBITE_MF :
+#if  defined ( NECSX ) || defined ( VPP ) || defined ( CRAY )
+      IF (K.GT.JPSHOR.OR.K.LE.0) THEN
+        CALL GSBITE_MF (KS,KD,KOFF,KSIZE,KSKBTW,K,KBPW,IMASKS,CDADIR)
+      ELSEIF (CDADIR.EQ.'D') THEN
+        CALL GBYTES_MF (KS,KD,KOFF,KSIZE,KSKBTW,K)
+      ELSE
+        CALL SBYTES_MF (KS,KD,KOFF,KSIZE,KSKBTW,K)
+      ENDIF
+#else
+      IF (CDADIR.EQ.'D') THEN
+        CALL GBYTES_MF (KS,KD,KOFF,KSIZE,KSKBTW,K)
+      ELSE
+        CALL SBYTES_MF (KS,KD,KOFF,KSIZE,KSKBTW,K)
+      ENDIF
+#endif
+
+      KWORD=IWORD
+      KOFF=IOFF
+      IF (LHOOK) CALL DR_HOOK('GSBYTE_MF',1,ZHOOK_HANDLE)
+      ENDSUBROUTINE GSBYTE_MF

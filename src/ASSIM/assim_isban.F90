@@ -1,0 +1,347 @@
+!SFX_LIC Copyright 1994-2014 CNRS, Meteo-France and Universite Paul Sabatier
+!SFX_LIC This is part of the SURFEX software governed by the CeCILL-C licence
+!SFX_LIC version 1. See LICENSE, CeCILL-C_V1-en.txt and CeCILL-C_V1-fr.txt  
+!SFX_LIC for details. version 1.
+!     ###############################################################################
+SUBROUTINE ASSIM_ISBA_n (IM, U, HPROGRAM, KI, &
+                        PCON_RAIN, PSTRAT_RAIN, PCON_SNOW, PSTRAT_SNOW,&
+                        PCLOUDS,   PLSM,        PEVAPTR,   PEVAP,      &
+                        PSWEC,     PTSC,        PUCLS,     PVCLS,      &
+                        PTS,       PT2M,        PHU2M,     PSWE,       &
+                        HTEST,     OD_MASKEXT,  PLON_IN,   PLAT_IN )
+
+!     ###############################################################################
+!
+!!****  *ASSIM_ISBA_n * - Chooses the surface assimilation schemes for ISBA
+!!
+!!    PURPOSE
+!!    -------
+!!
+!!**  METHOD
+!!    ------
+!!
+!!    REFERENCE
+!!    ---------
+!!      
+!!
+!!    AUTHOR
+!!    ------
+!!     T. Aspelien
+!!
+!!    MODIFICATIONS
+!!    -------------
+!!      Original    04/2012
+!!      Trygve Aspelien, Separating IO  06/2013
+!!      HIRLAM (P. Samuelsson), introduction of PATCH dependence, 04/2018
+!!--------------------------------------------------------------------
+!
+USE MODD_ISBA_n, ONLY : ISBA_P_t, ISBA_PE_t
+!
+USE MODD_SURFEX_n, ONLY : ISBA_MODEL_t
+!
+USE MODD_SURF_ATM_n, ONLY : SURF_ATM_t
+!
+USE MODD_SURF_PAR,       ONLY : XUNDEF
+USE MODD_ASSIM,          ONLY : CASSIM_ISBA,LAESNM,LEXTRAP_NATURE,&
+                                NPRINTLEV,LPIO
+!
+!
+USE YOMHOOK,             ONLY : LHOOK,   DR_HOOK
+USE PARKIND1,            ONLY : JPRB
+!
+USE MODI_ABOR1_SFX
+USE MODI_OI_HOR_EXTRAPOL_SURF
+USE MODI_ASSIM_EXTRAPOLATE_FIELD
+USE MODI_ASSIM_GATHER_WRITE_INCREMENTS
+USE MODI_ASSIM_ISBA_UPDATE_SNOW
+USE MODI_ASSIM_NATURE_ISBA_EKF
+USE MODI_ASSIM_NATURE_ISBA_ENKF
+USE MODI_ASSIM_NATURE_ISBA_OI
+USE MODI_AVERAGE_DIAG_MISC_ISBA_n
+USE MODI_GET_LUOUT
+!
+IMPLICIT NONE
+!
+!*      0.1    declarations of arguments
+!
+TYPE(ISBA_MODEL_t), INTENT(INOUT) :: IM
+!
+TYPE(SURF_ATM_t), INTENT(INOUT) :: U
+!
+CHARACTER(LEN=6),    INTENT(IN) :: HPROGRAM  ! program calling surf. schemes
+INTEGER,             INTENT(IN) :: KI
+REAL, DIMENSION(KI), INTENT(IN) :: PCON_RAIN
+REAL, DIMENSION(KI), INTENT(IN) :: PSTRAT_RAIN
+REAL, DIMENSION(KI), INTENT(IN) :: PCON_SNOW
+REAL, DIMENSION(KI), INTENT(IN) :: PSTRAT_SNOW
+REAL, DIMENSION(KI), INTENT(IN) :: PCLOUDS
+REAL, DIMENSION(KI), INTENT(IN) :: PLSM
+REAL, DIMENSION(KI), INTENT(IN) :: PEVAPTR
+REAL, DIMENSION(KI), INTENT(IN) :: PEVAP
+REAL, DIMENSION(KI), INTENT(IN) :: PSWEC
+REAL, DIMENSION(KI), INTENT(IN) :: PTSC
+REAL, DIMENSION(KI), INTENT(IN) :: PUCLS
+REAL, DIMENSION(KI), INTENT(IN) :: PVCLS
+REAL, DIMENSION(KI), INTENT(IN) :: PTS
+REAL, DIMENSION(KI), INTENT(IN) :: PT2M
+REAL, DIMENSION(KI), INTENT(IN) :: PHU2M
+REAL, DIMENSION(KI), INTENT(IN) :: PSWE
+CHARACTER(LEN=2),    INTENT(IN) :: HTEST ! must be equal to 'OK'
+LOGICAL,  DIMENSION (KI), INTENT(IN) ::  OD_MASKEXT
+REAL(KIND=JPRB), DIMENSION (:), INTENT(IN) ::  PLON_IN
+REAL(KIND=JPRB), DIMENSION (:), INTENT(IN) ::  PLAT_IN
+!
+!*      0.2    declarations of local variables
+!
+!-------------------------------------------------------------------------------------
+!
+TYPE(ISBA_P_t), POINTER :: PK
+TYPE(ISBA_PE_t), POINTER :: PEK
+REAL,    DIMENSION(:), ALLOCATABLE :: ZTS_EP
+REAL,    DIMENSION(:), ALLOCATABLE :: ZTP_EP
+REAL,    DIMENSION(:), ALLOCATABLE :: ZWS_EP
+REAL,    DIMENSION(:), ALLOCATABLE :: ZWP_EP
+REAL,    DIMENSION(:), ALLOCATABLE :: ZTL_EP
+REAL,    DIMENSION(:), ALLOCATABLE :: ZSWE_EP
+REAL,    DIMENSION(:), ALLOCATABLE :: ZSNR_EP
+REAL,    DIMENSION(:), ALLOCATABLE :: ZSNA_EP
+REAL,    DIMENSION(:), ALLOCATABLE :: ZEP
+REAL,    DIMENSION(:), ALLOCATABLE :: ZSNA_EP0,ZSNA_EP01
+REAL,    DIMENSION(:), ALLOCATABLE :: ZSNR_EP0,ZSNR_EP01
+REAL,    DIMENSION(:), ALLOCATABLE :: ZLSM
+REAL,    DIMENSION(KI) :: ZSWE
+CHARACTER(LEN=2) :: CP
+INTEGER :: JI, IMASK, JPATCH, INLAYER,JP,JL,ILUOUT
+REAL(KIND=JPRB) :: ZHOOK_HANDLE
+!
+IF (LHOOK) CALL DR_HOOK('ASSIM_ISBA_N',0,ZHOOK_HANDLE)
+!
+IF (HTEST/='OK') THEN
+  CALL ABOR1_SFX('ASSIM_ISBA_n: FATAL ERROR DURING ARGUMENT TRANSFER')
+END IF
+!
+CALL GET_LUOUT(HPROGRAM,ILUOUT)
+INLAYER = IM%NPE%AL(1)%TSNOW%NLAYER
+!
+! Snow analysis/update. Store the original field in the surfex fiele
+IF (LAESNM) THEN
+  IF (LPIO) WRITE(ILUOUT,*) 'UPDATE SNOW FROM ANALYSED VALUES'
+  CALL ASSIM_ISBA_UPDATE_SNOW(IM%O, IM%S, IM%NP, IM%NPE, HPROGRAM, KI, &
+                                PSWE, HTEST)
+ELSE
+  IF (LPIO) WRITE(ILUOUT,*) 'SNOW IS NOT UPDATED FROM ANALYSED VALUES'
+ENDIF
+
+! Soil assimilation
+IF ( CASSIM_ISBA == 'EKF  ' ) THEN
+  !
+  ! Run EKF for soil
+  CALL ASSIM_NATURE_ISBA_EKF(IM%O, IM%S, IM%K, IM%NP, IM%NPE, HPROGRAM, KI, PT2M, PHU2M, HTEST)
+  !
+ELSEIF ( CASSIM_ISBA == 'ENKF ') THEN
+  !
+  CALL ASSIM_NATURE_ISBA_ENKF(IM%O, IM%S, IM%K, IM%NP, IM%NPE, HPROGRAM, KI, PT2M, PHU2M, HTEST)
+  !  
+ELSEIF ( CASSIM_ISBA == 'OI   ' ) THEN
+  !
+  ! Run OI for soil
+  CALL ASSIM_NATURE_ISBA_OI(IM%O, IM%S, IM%K, IM%NP, IM%NPE, IM%ID, HPROGRAM, KI, &
+                            PCON_RAIN, PSTRAT_RAIN, PCON_SNOW, PSTRAT_SNOW,       &
+                            PCLOUDS,   PLSM,        PEVAPTR,   PEVAP,             &
+                            PSWEC,     PTSC,        PUCLS,     PVCLS,             &
+                            PTS,       PT2M,        PHU2M,                        &
+                            HTEST,     OD_MASKEXT,  PLON_IN,   PLAT_IN            )
+  !
+ELSEIF ( CASSIM_ISBA == 'NONE ' ) THEN
+  ! Do nothing
+ELSE
+  CALL ABOR1_SFX(CASSIM_ISBA//' is not a defined scheme for ASSIM_ISBA_N')
+ENDIF
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+! Extrapolation if requested of snow fields
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+IF ( LEXTRAP_NATURE ) THEN
+  ALLOCATE(ZWS_EP(KI))
+  ALLOCATE(ZWP_EP(KI))
+  ALLOCATE(ZTS_EP(KI))
+  ALLOCATE(ZTP_EP(KI))
+  ALLOCATE(ZTL_EP(KI))
+  ALLOCATE(ZEP(KI))
+  ALLOCATE(ZLSM(KI))
+ 
+  ! Loop all patches
+  DO JPATCH=1,IM%O%NPATCH
+    ZWS_EP(:) = XUNDEF
+    ZWP_EP(:) = XUNDEF
+    ZTS_EP(:) = XUNDEF
+    ZTP_EP(:) = XUNDEF
+    ZTL_EP(:) = XUNDEF
+    ZLSM(:)   = XUNDEF
+
+
+    PK => IM%NP%AL(JPATCH)
+    PEK => IM%NPE%AL(JPATCH)
+
+    DO JI = 1,PK%NSIZE_P
+      IMASK = PK%NR_P(JI)
+      ZWS_EP(IMASK)  = PEK%XWG(JI,1)
+      ZWP_EP(IMASK)  = PEK%XWG(JI,2)
+      ZTS_EP(IMASK)  = PEK%XTG(JI,1)
+      ZTP_EP(IMASK)  = PEK%XTG(JI,2)
+      ZTL_EP(IMASK)  = PEK%XWGI(JI,2)
+      ZLSM(IMASK)    = PLSM(JI)
+    ENDDO
+    WRITE(CP,'(I2)') JPATCH
+
+    ! TG1
+    ZEP(:)=ZTS_EP(:)
+    CALL ASSIM_EXTRAPOLATE_FIELD(HPROGRAM,IM%G%XLAT,IM%G%XLON,ZEP,.TRUE.,OD_MASKEXT,ZTS_EP,PLSM=ZLSM)
+    CALL ASSIM_GATHER_WRITE_INCREMENTS(HPROGRAM,"EXTRAPOLATED TG1 PATCH:"//CP,ZEP,ZTS_EP,XUNDEF)
+    ! TG2
+    ZEP(:) = ZTP_EP(:)
+    CALL ASSIM_EXTRAPOLATE_FIELD(HPROGRAM,IM%G%XLAT,IM%G%XLON,ZEP,.TRUE.,OD_MASKEXT,ZTP_EP,PLSM=ZLSM)
+    CALL ASSIM_GATHER_WRITE_INCREMENTS(HPROGRAM,"EXTRAPOLATED TG2 PATCH:"//CP,ZEP,ZTP_EP,XUNDEF)
+    ! WG1
+    ZEP(:) = ZWS_EP(:)
+    CALL ASSIM_EXTRAPOLATE_FIELD(HPROGRAM,IM%G%XLAT,IM%G%XLON,ZEP,.TRUE.,OD_MASKEXT,ZWS_EP,PLSM=ZLSM)
+    CALL ASSIM_GATHER_WRITE_INCREMENTS(HPROGRAM,"EXTRAPOLATED WG1 PATCH:"//CP,ZEP,ZWS_EP,XUNDEF)
+    ! WG2
+    ZEP(:) = ZWP_EP(:)
+    CALL ASSIM_EXTRAPOLATE_FIELD(HPROGRAM,IM%G%XLAT,IM%G%XLON,ZEP,.TRUE.,OD_MASKEXT,ZWP_EP,PLSM=ZLSM)
+    CALL ASSIM_GATHER_WRITE_INCREMENTS(HPROGRAM,"EXTRAPOLATED WG2 PATCH:"//CP,ZEP,ZWP_EP,XUNDEF)
+    ! WGI2
+    ZEP(:) = ZTL_EP(:)
+    CALL ASSIM_EXTRAPOLATE_FIELD(HPROGRAM,IM%G%XLAT,IM%G%XLON,ZEP,.TRUE.,OD_MASKEXT,ZTL_EP,PLSM=ZLSM)
+    CALL ASSIM_GATHER_WRITE_INCREMENTS(HPROGRAM,"EXTRAPOLATED WGI2 PATCH:"//CP,ZEP,ZTL_EP,XUNDEF)
+
+    DO JI = 1,PK%NSIZE_P
+      IMASK = PK%NR_P(JI)
+      ! Set extrpolated fields to global
+      PEK%XWG (JI,1) = ZWS_EP(IMASK)
+      PEK%XWG (JI,2) = ZWP_EP(IMASK)
+      PEK%XTG (JI,1) = ZTS_EP(IMASK)
+      PEK%XTG (JI,2) = ZTP_EP(IMASK)
+      PEK%XWGI(JI,2) = ZTL_EP(IMASK)
+    ENDDO
+  ENDDO
+  DEALLOCATE(ZLSM)
+  DEALLOCATE(ZEP)
+  DEALLOCATE(ZWS_EP)
+  DEALLOCATE(ZWP_EP)
+  DEALLOCATE(ZTS_EP)
+  DEALLOCATE(ZTP_EP)
+  DEALLOCATE(ZTL_EP)
+ENDIF
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+! Extrapolation if requested of snow fields
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+IF ( LEXTRAP_NATURE .AND. LAESNM ) THEN
+  ALLOCATE(ZSWE_EP(KI))
+  ALLOCATE(ZSNR_EP(KI))
+  ALLOCATE(ZSNA_EP(KI))
+  ALLOCATE(ZSNA_EP0(KI))
+  ALLOCATE(ZSNR_EP0(KI))
+  ALLOCATE(ZSNA_EP01(KI))
+  ALLOCATE(ZSNR_EP01(KI))
+  ALLOCATE(ZLSM(KI))
+  ALLOCATE(ZEP(KI))
+ 
+  ! Loop all patches
+  DO JPATCH=1,IM%O%NPATCH
+    ZSWE_EP(:) = XUNDEF
+    ZSNR_EP(:) = XUNDEF
+    ZSNA_EP(:) = XUNDEF
+    ZLSM(:)    = XUNDEF
+
+    IF ( IM%NPE%AL(JPATCH)%TSNOW%NLAYER /= 1 ) THEN
+      CALL ABOR1_SFX ('Extrapolation of ISBA points can only be performed for one layer snow schemes')
+    ENDIF
+
+    PK => IM%NP%AL(JPATCH)
+    PEK => IM%NPE%AL(JPATCH)
+
+    DO JI = 1,PK%NSIZE_P
+      IMASK = PK%NR_P(JI)
+      ZSWE_EP(IMASK) = PEK%TSNOW%WSNOW(JI,INLAYER)
+      ZSNR_EP(IMASK) = PEK%TSNOW%RHO  (JI,INLAYER)
+      ZSNA_EP(IMASK) = PEK%TSNOW%ALB  (JI)
+      ZLSM(IMASK)    = PLSM(JI)
+    ENDDO
+    WRITE(CP,'(I2)') JPATCH
+
+    ZSNA_EP0(:)=ZSNA_EP(:)
+    ZSNA_EP01(:)=ZSNA_EP0(:)
+    ZSNR_EP0(:)=ZSNR_EP(:)
+    ZSNR_EP01(:)=ZSNR_EP(:)
+    DO JI = 1,PK%NSIZE_P
+      IMASK = PK%NR_P(JI)
+      IF ( PEK%TSNOW%WSNOW(JI,INLAYER) < 1.0E-10 .AND. PSWE(IMASK) >= 1.0E-10 ) THEN
+        ZSNA_EP0(IMASK)=XUNDEF
+        ZSNR_EP0(IMASK)=XUNDEF
+      ENDIF
+    ENDDO
+
+    ZEP(:) = ZSWE_EP(:)
+    CALL ASSIM_EXTRAPOLATE_FIELD(HPROGRAM,IM%G%XLAT,IM%G%XLON,ZEP,.TRUE.,OD_MASKEXT,ZSWE_EP,PLSM=PLSM)
+    CALL ASSIM_GATHER_WRITE_INCREMENTS(HPROGRAM,"EXTRAPOLATED WSNOW_VEG PATCH:"//CP,ZEP,ZSWE_EP,XUNDEF)
+
+    CALL ASSIM_EXTRAPOLATE_FIELD(HPROGRAM,IM%G%XLAT,IM%G%XLON,ZSNR_EP0,.TRUE.,OD_MASKEXT,ZSNR_EP,PLSM=PLSM)
+    CALL ASSIM_GATHER_WRITE_INCREMENTS(HPROGRAM,"EXTRAPOLATED SNOW RHO PATCH:"//CP,ZSNR_EP01,ZSNR_EP,XUNDEF)
+    CALL ASSIM_EXTRAPOLATE_FIELD(HPROGRAM,IM%G%XLAT,IM%G%XLON,ZSNA_EP0,.TRUE.,OD_MASKEXT,ZSNA_EP,PLSM=PLSM)
+    CALL ASSIM_GATHER_WRITE_INCREMENTS(HPROGRAM,"EXTRAPOLATED SNOW ALB PATCH:"//CP,ZSNA_EP01,ZSNA_EP,XUNDEF)
+
+    DO JI = 1,PK%NSIZE_P
+      IMASK = PK%NR_P(JI)
+      ! Set extrpolated fields to global
+      PEK%TSNOW%WSNOW(JI,INLAYER) = ZSWE_EP(IMASK)
+      PEK%TSNOW%RHO  (JI,INLAYER) = ZSNR_EP(IMASK)
+      PEK%TSNOW%ALB  (JI) = ZSNA_EP(IMASK)
+    ENDDO
+  ENDDO 
+  DEALLOCATE(ZSNA_EP0)
+  DEALLOCATE(ZSNR_EP0)
+  DEALLOCATE(ZSNA_EP01)
+  DEALLOCATE(ZSNR_EP01)
+  DEALLOCATE(ZSWE_EP)
+  DEALLOCATE(ZSNR_EP)
+  DEALLOCATE(ZSNA_EP)
+  DEALLOCATE(ZLSM)
+  DEALLOCATE(ZEP)
+ENDIF
+
+! Snow analysis/update security
+IF (LAESNM) THEN
+
+  DO JPATCH=1,IM%O%NPATCH
+
+    PK => IM%NP%AL(JPATCH)
+    PEK => IM%NPE%AL(JPATCH)
+    ! removes very small values due to computation precision
+    DO JI = 1,PK%NSIZE_P
+
+      IF( SUM(PEK%TSNOW%WSNOW(JI,:)) < 1.0E-10 ) THEN
+        PEK%TSNOW%WSNOW(JI,:) = 0.0
+        PEK%TSNOW%RHO(JI,:)    = XUNDEF
+        PEK%TSNOW%ALB(JI)       = XUNDEF
+        IF ( PEK%TSNOW%SCHEME == '3-L' .OR. PEK%TSNOW%SCHEME =='1-L' ) THEN
+          PEK%TSNOW%HEAT(JI,:)    = XUNDEF
+          PEK%TSNOW%AGE(JI,:)    = XUNDEF
+        ENDIF
+      END IF
+    ENDDO
+
+    !
+  ENDDO
+!
+ENDIF
+!
+!to be improved later - needed for surfex course
+ CALL AVERAGE_DIAG_MISC_ISBA_n(IM%ID%DM, IM%ID%NDM, IM%O, IM%NP, IM%NPE)
+ !
+IF (LHOOK) CALL DR_HOOK('ASSIM_ISBA_N',1,ZHOOK_HANDLE)
+!
+!-------------------------------------------------------------------------------------
+!
+END SUBROUTINE ASSIM_ISBA_n

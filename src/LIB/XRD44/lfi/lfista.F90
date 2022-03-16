@@ -1,0 +1,160 @@
+! Oct-2012 P. Marguinaud 64b LFI
+! Jan-2011 P. Marguinaud Thread-safe LFI
+
+SUBROUTINE LFISTA_FORT                     &
+&                     (LFI, KREP, KNUMER )
+USE LFIMOD, ONLY : LFICOM
+USE PARKIND1, ONLY : JPRB
+USE YOMHOOK , ONLY : LHOOK, DR_HOOK
+USE LFI_PRECISION
+IMPLICIT NONE
+!****
+!        SOUS-PROGRAMME CHARGE D'IMPRIMER LES STATISTIQUES D'UTILISATION
+!     D'UN FICHIER OUVERT POUR LE LOGICIEL DE FICHIERS INDEXES *LFI*.
+!**
+!    ARGUMENTS : KREP   (SORTIE) ==> CODE-REPONSE DU SOUS-PROGRAMME;
+!                KNUMER (ENTREE) ==> LFI%NUMERO DE L'UNITE LOGIQUE.
+!
+!        L'IMPRESSION DES STATISTIQUES VIA CE SOUS-PROGRAMME EST
+!     FAITE QUELQUE SOIT LES OPTIONS D'IMPRESSION DES STATISTIQUES
+!     A LA FERMETURE ( GLOBALE, OU PROPRE AU FICHIER ); IL SUFFIT
+!     QUE L'UNITE LOGIQUE *KNUMER* SOIT OUVERTE POUR LE LOGICIEL LFI.
+!        PAR AILLEURS, UTILSATION EST A COMPRENDRE "DEPUIS L'OUVERTURE".
+!     ( MEME S'IL Y A QUELQUES ASPECTS "HISTORIQUES" )
+!
+!
+TYPE(LFICOM) :: LFI
+INTEGER (KIND=JPLIKB) KREP, KNUMER, IRANG, IREP, INIMES
+!
+CHARACTER(LEN=LFI%JPLSPX) CLNSPR
+CHARACTER(LEN=LFI%JPLMES) CLMESS
+CHARACTER(LEN=LFI%JPLFTX) CLACTI
+LOGICAL LLFATA
+
+!**
+!     1.  -  CONTROLES DU PARAMETRES D'ENTREE, PUIS INITIALISATIONS.
+!-----------------------------------------------------------------------
+!
+REAL(KIND=JPRB) :: ZHOOK_HANDLE
+IF (LHOOK) CALL DR_HOOK('LFISTA_FORT',0,ZHOOK_HANDLE)
+CLACTI=''
+CALL LFINUM_FORT                    &
+&               (LFI, KNUMER,IRANG)
+!
+IF (IRANG.EQ.0) THEN
+  IREP=-1
+  GOTO 1001
+ENDIF
+!
+ IF (LFI%LMULTI) CALL LFIVER_FORT                              &
+&                                (LFI, LFI%VERRUE(IRANG),'ON')
+!**
+!     2.  -  IMPRESSION DES STATISTIQUES PROPREMENT DITE.
+!-----------------------------------------------------------------------
+!
+CALL LFIIST_FORT                     &
+&               (LFI, IRANG,.FALSE.)
+IREP=0
+!**
+!    10.  -  PHASE TERMINALE : MESSAGERIE, AVEC "ABORT" EVENTUEL,
+!            VIA LE SOUS-PROGRAMME "LFIEMS" .
+!-----------------------------------------------------------------------
+!
+1001 CONTINUE
+KREP=IREP
+LLFATA=LLMOER (IREP,IRANG)
+!
+IF (IRANG.NE.0) THEN
+  LFI%NDEROP(IRANG)=8
+  LFI%NDERCO(IRANG)=IREP
+   IF (LFI%LMULTI) CALL LFIVER_FORT                               &
+&                                  (LFI, LFI%VERRUE(IRANG),'OFF')
+ENDIF
+!
+IF (LLFATA.OR.IXNIMS (IRANG).EQ.2) THEN
+  INIMES=2
+ELSE
+  IF (LHOOK) CALL DR_HOOK('LFISTA_FORT',1,ZHOOK_HANDLE)
+  RETURN
+ENDIF
+!
+CLNSPR='LFISTA'
+WRITE (UNIT=CLMESS,FMT='(''KREP='',I4,'', KNUMER='',I3)') &
+&     KREP,KNUMER
+CALL LFIEMS_FORT                                 &
+&               (LFI, KNUMER,INIMES,IREP,LLFATA, &
+&                CLMESS,CLNSPR,CLACTI)
+!
+IF (LHOOK) CALL DR_HOOK('LFISTA_FORT',1,ZHOOK_HANDLE)
+
+CONTAINS
+
+#include "lficom2.ixnims.h"
+#include "lficom2.llmoer.h"
+
+END SUBROUTINE LFISTA_FORT
+
+
+
+! Oct-2012 P. Marguinaud 64b LFI
+SUBROUTINE LFISTA64           &
+&           (KREP, KNUMER)
+USE LFIMOD, ONLY : LFI => LFICOM_DEFAULT, &
+&                   LFICOM_DEFAULT_INIT,   &
+&                   NEW_LFI_DEFAULT
+USE LFI_PRECISION
+IMPLICIT NONE
+! Arguments
+INTEGER (KIND=JPLIKB)  KREP                                   !   OUT
+INTEGER (KIND=JPLIKB)  KNUMER                                 ! IN   
+
+IF (.NOT. LFICOM_DEFAULT_INIT) CALL NEW_LFI_DEFAULT ()
+
+CALL LFISTA_FORT               &
+&           (LFI, KREP, KNUMER)
+
+END SUBROUTINE LFISTA64
+
+SUBROUTINE LFISTA             &
+&           (KREP, KNUMER)
+USE LFIMOD, ONLY : LFI => LFICOM_DEFAULT, &
+&                   LFICOM_DEFAULT_INIT,   &
+&                   NEW_LFI_DEFAULT
+USE LFI_PRECISION
+IMPLICIT NONE
+! Arguments
+INTEGER (KIND=JPLIKM)  KREP                                   !   OUT
+INTEGER (KIND=JPLIKM)  KNUMER                                 ! IN   
+
+IF (.NOT. LFICOM_DEFAULT_INIT) CALL NEW_LFI_DEFAULT ()
+
+CALL LFISTA_MT                &
+&           (LFI, KREP, KNUMER)
+
+END SUBROUTINE LFISTA
+
+SUBROUTINE LFISTA_MT             &
+&           (LFI, KREP, KNUMER)
+USE LFIMOD, ONLY : LFICOM
+USE LFI_PRECISION
+IMPLICIT NONE
+! Arguments
+TYPE (LFICOM)          LFI                                    ! INOUT
+INTEGER (KIND=JPLIKM)  KREP                                   !   OUT
+INTEGER (KIND=JPLIKM)  KNUMER                                 ! IN   
+! Local integers
+INTEGER (KIND=JPLIKB)  IREP                                   !   OUT
+INTEGER (KIND=JPLIKB)  INUMER                                 ! IN   
+! Convert arguments
+
+INUMER     = INT (    KNUMER, JPLIKB)
+
+CALL LFISTA_FORT               &
+&           (LFI, IREP, INUMER)
+
+KREP       = INT (      IREP, JPLIKM)
+
+END SUBROUTINE LFISTA_MT
+
+!INTF KREP            OUT 
+!INTF KNUMER        IN    

@@ -1,0 +1,705 @@
+! Oct-2012 P. Marguinaud 64b LFI
+! Jan-2011 P. Marguinaud Thread-safe LFI
+! Sep-2012 P. Marguinaud Fix out of 72 character limit code
+SUBROUTINE LFILED_FORT                                         &
+&                     (LFI, KREP, KRANG, KTAB, KLONG, KRGPIM,  &
+&                      KPOSEX, KRETIN )
+USE LFIMOD, ONLY : LFICOM
+USE PARKIND1, ONLY : JPRB
+USE YOMHOOK , ONLY : LHOOK, DR_HOOK
+USE LFI_PRECISION
+IMPLICIT NONE
+!****
+!        SOUS-PROGRAMME *INTERNE* DU LOGICIEL DE FICHIERS INDEXES LFI
+!     LECTURE DES DONNEES PROPREMENT DITES, UNE FOIS L'ARTICLE LOGIQUE
+!     DEFINI (PAR NOM, OU PAR POSITION) .
+!**
+!    ARGUMENTS : KREP   (SORTIE) ==> CODE-REPONSE DU SOUS-PROGRAMME;
+!                KRANG  (ENTREE) ==> RANG ( DANS LA TABLE *LFI%NUMERO* )
+!                                    DE L'UNITE LOGIQUE CONCERNEE;
+!                KTAB   (ENTREE) ==> PREMIER MOT A LIRE;
+!                KLONG  (ENTREE) ==> LONGUEUR DE L'ARTICLE A LIRE;
+!                KRGPIM (ENTREE) ==> RANG DANS LES TABLES LFI%CNOMAR,LFI%MLGPOS,
+!                                    ETC. DE LA P.P.I. OU FIGURE
+!                                    L'ARTICLE;
+!                KPOSEX (ENTREE) ==> POSITION ( DANS LE FICHIER ) OU
+!                                    COMMENCER A LIRE L'ARTICLE;
+!                KRETIN (SORTIE) ==> CODE-RETOUR INTERNE.
+!
+!
+TYPE(LFICOM) :: LFI
+INTEGER (KIND=JPLIKB) KREP, KRANG, KLONG, KRGPIM 
+INTEGER (KIND=JPLIKB) KPOSEX, KRETIN
+INTEGER (KIND=JPLIKB)  KTAB (KLONG), IFOURT (LFI%JPLARX)
+INTEGER (KIND=JPLIKB) INUCPL (LFI%JPNPDF), INAPHY 
+INTEGER (KIND=JPLIKB) INUMER, ILARPH 
+INTEGER (KIND=JPLIKB) IPODEB, IPOFIN
+INTEGER (KIND=JPLIKB) IARDEB, IARFIN, IDCDEB, IDCFIN 
+INTEGER (KIND=JPLIKB) ICPLTI, ICPLTF, ICPTTN
+INTEGER (KIND=JPLIKB) ICPTTX, INCPLT, INUMAP, J, JD 
+INTEGER (KIND=JPLIKB) IDECDE, IPAREC, ITAMLI
+INTEGER (KIND=JPLIKB) INUMPJ, INUMPD, IARTIC, INPDRE 
+INTEGER (KIND=JPLIKB) INPDTA, INPDIS, INDIK1
+INTEGER (KIND=JPLIKB) INDIK2, INDIC1, INDIC2, JI 
+INTEGER (KIND=JPLIKB) IFACTM, IRETOU, INIMES
+INTEGER (KIND=JPLIKB) IRETIN
+!
+LOGICAL LLADON, LLDERN
+!
+CHARACTER(LEN=LFI%JPLSPX) CLNSPR
+CHARACTER(LEN=LFI%JPLMES) CLMESS
+CHARACTER(LEN=LFI%JPLFTX) CLACTI
+LOGICAL LLFATA
+
+!**
+!     1.  -  CONTROLES DES PARAMETRES D'APPEL, PUIS INITIALISATIONS.
+!-----------------------------------------------------------------------
+!
+REAL(KIND=JPRB) :: ZHOOK_HANDLE
+IF (LHOOK) CALL DR_HOOK('LFILED_FORT',0,ZHOOK_HANDLE)
+CLACTI=''
+IRETOU=0
+!
+IF (KRANG.LE.0.OR.KRANG.GT.LFI%JPNXFI &
+&    .OR.KRGPIM.LE.0.OR.KPOSEX.EQ.0)   &
+&     THEN
+  KREP=-16
+  GOTO 1001
+ENDIF
+!
+!        ON COMPLETE LES CARACTERISTIQUES DE L'ARTICLE.
+!
+INAPHY=0
+!
+IF (.NOT.LFI%LPHASP(KRGPIM)) THEN
+!
+  CALL LFIPHA_FORT                                &
+&                 (LFI, KREP,KRANG,KRGPIM,IRETIN)
+!
+  IF (IRETIN.EQ.1) THEN
+    GOTO 903
+  ELSEIF (IRETIN.EQ.2) THEN
+    GOTO 904
+  ELSEIF (IRETIN.NE.0) THEN
+    GOTO 1001
+  ENDIF
+!
+ENDIF
+!
+INUMER=LFI%NUMERO(KRANG)
+IFACTM=LFI%MFACTM(KRANG)
+ILARPH=LFI%JPLARD*IFACTM
+KREP=0
+!**
+!     2.  -   LECTURE DES DONNEES .
+!-----------------------------------------------------------------------
+!*
+!     2.1 - UTILISATION DES ARTICLES PHYSIQUES PRESENTS EN MEMOIRE,
+!           ET QUE L'ON S'APPRETE A LIRE *EN ENTIER*;
+!-----------------------------------------------------------------------
+!
+IPODEB=KPOSEX
+IPOFIN=KPOSEX+KLONG-1
+IARDEB=1+(IPODEB-1)/ILARPH
+IARFIN=1+(IPOFIN-1)/ILARPH
+IDCDEB=MOD (IPODEB-1,ILARPH)
+IDCFIN=MOD (IPOFIN  ,ILARPH)
+LLDERN=IDCFIN.NE.0.AND.((IARFIN.NE.IARDEB)                      &
+&                        .OR.(IARFIN.EQ.IARDEB.AND.IDCDEB.EQ.0))
+ICPLTI=IARDEB+(IDCDEB+ILARPH-1)/ILARPH
+ICPLTF=IARFIN-1+(ILARPH-IDCFIN)/ILARPH
+ICPTTN=ICPLTF+1
+ICPTTX=ICPLTI-1
+INCPLT=0
+!
+IF (LFI%LMISOP) THEN
+ WRITE (UNIT=LFI%NULOUT,FMT=*)'KPOSEX= ',KPOSEX,', IPODEB= ', &
+&                               IPODEB,', IPOFIN= ',IPOFIN
+ WRITE (UNIT=LFI%NULOUT,FMT=*)'IARDEB= ',IARDEB,', IARFIN= ', &
+&                               IARFIN,', IDCDEB= ',IDCDEB
+ WRITE (UNIT=LFI%NULOUT,FMT=*)'IDCFIN= ',IDCFIN,', ICPLTI= ', &
+&                               ICPLTI,', ICPLTF= ',ICPLTF
+ WRITE (UNIT=LFI%NULOUT,FMT=*)'ICPTTN= ',ICPTTN,', ICPTTX= ', &
+&                               ICPTTX,', LLDERN= ',LLDERN
+ENDIF
+!
+IF (ICPLTF.GE.ICPLTI) THEN
+!
+  DO J=0,LFI%JPNPDF-1
+  INUMAP=LFI%NUMAPD(J,KRANG)
+!
+  IF (INUMAP.GE.ICPLTI.AND.INUMAP.LE.ICPLTF) THEN
+    INCPLT=INCPLT+1
+    INUCPL(INCPLT)=INUMAP
+    ICPTTN=MIN (ICPTTN,INUMAP)
+    ICPTTX=MAX (ICPTTX,INUMAP)
+    IDECDE=(INUMAP-IARDEB)*ILARPH-IDCDEB
+!
+    IF (LFI%NLONPD(J,KRANG).LT.ILARPH) THEN
+!
+      IF (INUMAP.GT.LFI%MDES1D(IXM(LFI%JPAXPD,KRANG)).OR. &
+&          .NOT.LFI%LECRPD(J,KRANG)) THEN
+        KREP=-16
+        GOTO 1001
+      ELSE
+        INAPHY=INUMAP
+        CALL LFILDO_FORT                             &
+&                       (LFI, KREP,INUMER,INUMAP,  &
+&                        IFOURT,LFI%NBREAD(KRANG), &
+&                        IFACTM,LFI%YLFIC (KRANG), &
+&                        IRETIN)
+!
+        IF (IRETIN.NE.0) THEN
+          GOTO 904
+        ENDIF
+!
+        DO JD=LFI%NLONPD(J,KRANG)+1,ILARPH
+        LFI%MTAMPD(IXT(JD,J,KRANG))=IFOURT(JD)
+        ENDDO
+!
+      ENDIF
+!
+      LFI%NLONPD(J,KRANG)=ILARPH
+    ENDIF
+!
+    DO JD=1,ILARPH
+    KTAB(IDECDE+JD)=LFI%MTAMPD(IXT(JD,J,KRANG))
+    ENDDO
+!
+    IF (INCPLT.GT.(ICPLTF-ICPLTI)) THEN
+      GOTO 220
+    ENDIF
+!
+  ENDIF
+!
+  ENDDO
+!
+ENDIF
+!
+220 CONTINUE
+!*
+!     2.2 - TRAITEMENT DE LA PREMIERE PAGE DE DONNEES, SI L'ARTICLE
+!           LOGIQUE NE COMMENCE PAS JUSTE EN DEBUT D'ARTICLE PHYSIQUE.
+!           CETTE PAGE EST CONSERVEE... DES FOIS QUE L'ACCES
+!           SUIVANT AU FICHIER SOIT POUR L'ARTICLE LOGIQUE IMMEDIATEMENT
+!           DEVANT (CAS DE BALAYAGE INVERSE DU FICHIER, PAR EXEMPLE) .
+!-----------------------------------------------------------------------
+!
+IDECDE=0
+!
+IF (IDCDEB.EQ.0) THEN
+  IPAREC=0
+  ITAMLI=LFI%JPNPDF
+ELSE
+  IPAREC=MIN (ILARPH*IARDEB,IPOFIN)-KPOSEX+1
+  ITAMLI=LFI%JPNPDF-1
+!
+!           L'ARTICLE DE DONNEES A LIRE NE COMMENCE PAS AU DEBUT D'UN
+!         ARTICLE PHYSIQUE. IL FAUT DONC AVOIR CET ARTICLE PHYSIQUE
+!         EN MEMOIRE POUR LE COMPLETER.
+!
+  DO J=0,LFI%JPNPDF-1
+  INUMPJ=MOD (LFI%NDERPD(KRANG)+J,LFI%JPNPDF)
+!
+  IF (LFI%NUMAPD(INUMPJ,KRANG).EQ.IARDEB) THEN
+!
+!           ARTICLE PHYSIQUE CHERCHE EN MEMOIRE.
+!
+    IF (LFI%NLONPD(INUMPJ,KRANG).LT.(IDCDEB+IPAREC)) THEN
+!
+      IF (IARDEB.GT.LFI%MDES1D(IXM(LFI%JPAXPD,KRANG))) THEN
+        KREP=-16
+        GOTO 1001
+      ELSEIF (LFI%LECRPD(INUMPJ,KRANG)) THEN
+        INAPHY=IARDEB
+        CALL LFILDO_FORT                                  &
+&                       (LFI, KREP,INUMER,IARDEB,IFOURT,&
+&                        LFI%NBREAD(KRANG),IFACTM,      &
+&                        LFI%YLFIC (KRANG),IRETIN)
+!
+        IF (IRETIN.NE.0) THEN
+          GOTO 904
+        ENDIF
+!
+        DO JD=LFI%NLONPD(INUMPJ,KRANG)+1,ILARPH
+        LFI%MTAMPD(IXT(JD,INUMPJ,KRANG))=IFOURT(JD)
+        ENDDO
+!
+      ELSE
+        LFI%NUMAPD(INUMPJ,KRANG)=LFI%JPNIL
+        INAPHY=IARDEB
+        CALL LFILDO_FORT                                      &
+&                 (LFI, KREP,INUMER,IARDEB,                 &
+&                  LFI%MTAMPD(IXT(1_JPLIKB ,INUMPJ,KRANG)), &
+&                  LFI%NBREAD(KRANG),IFACTM,                &
+&                  LFI%YLFIC (KRANG),IRETIN)
+!
+        IF (IRETIN.NE.0) THEN
+          GOTO 904
+        ENDIF
+!
+        LFI%NUMAPD(INUMPJ,KRANG)=IARDEB
+      ENDIF
+!
+      LFI%NLONPD(INUMPJ,KRANG)=ILARPH
+    ENDIF
+!
+    INUMPD=INUMPJ
+    GOTO 223
+  ENDIF
+!
+  ENDDO
+!
+!     ARTICLE PHYSIQUE CHERCHE PAS EN MEMOIRE... ON DOIT DONC LE LIRE.
+!
+  INUMPD=MOD (1+LFI%NDERPD(KRANG),LFI%JPNPDF)
+  INAPHY=0
+!
+  IF (LFI%LECRPD(INUMPD,KRANG)) THEN
+!
+    CALL LFIVID_FORT                                       &
+&                   (LFI, KREP,KRANG,INUMPD,IFOURT,IRETIN)
+!
+    IF (IRETIN.EQ.1) THEN
+      GOTO 903
+    ELSEIF (IRETIN.EQ.2) THEN
+      GOTO 904
+    ELSEIF (IRETIN.NE.0) THEN
+      GOTO 1001
+    ENDIF
+!
+  ENDIF
+!
+  LFI%NUMAPD(INUMPD,KRANG)=LFI%JPNIL
+  INAPHY=IARDEB
+  CALL LFILDO_FORT                                            &
+&                 (LFI, KREP,INUMER,IARDEB,                 &
+&                  LFI%MTAMPD(IXT(1_JPLIKB ,INUMPD,KRANG)), &
+&                  LFI%NBREAD(KRANG),IFACTM,                &
+&                  LFI%YLFIC (KRANG),IRETIN)
+!
+  IF (IRETIN.NE.0) THEN
+    GOTO 904
+  ENDIF
+!
+  LFI%NUMAPD(INUMPD,KRANG)=IARDEB
+  LFI%NLONPD(INUMPD,KRANG)=ILARPH
+!
+223 CONTINUE
+!
+!         TRANSFERT DE LA PARTIE UTILE DES DONNEES POUR CE DEBUT
+!       D'ARTICLE LOGIQUE.
+!
+  DO JD=1,IPAREC
+  KTAB(JD)=LFI%MTAMPD(IXT(IDCDEB+JD,INUMPD,KRANG))
+  ENDDO
+!
+  LFI%NDERPD(KRANG)=INUMPD
+ENDIF
+!*
+!     2.3 - LECTURE DES ARTICLES PHYSIQUES COMPLETS NE TENANT PAS OU NE
+!           DEVANT PAS ETRE STOCKES DANS LES PAGES DE DONNEES "TAMPON".
+!-----------------------------------------------------------------------
+!
+IF (.NOT.LFI%LTAMPL(KRANG)) THEN
+  ITAMLI=0
+ELSEIF (LLDERN) THEN
+  ITAMLI=ITAMLI-1
+ENDIF
+!
+IARTIC=ICPLTI-1
+INPDRE=(KLONG-IPAREC-IDCFIN+ILARPH-1)/ILARPH-INCPLT
+INPDTA=MIN (INPDRE,ITAMLI)
+INPDIS=INPDRE-ITAMLI
+INDIK1=1
+INDIK2=INCPLT
+LLADON=.TRUE.
+!
+DO J=1,INPDIS
+!
+231 CONTINUE
+IARTIC=IARTIC+1
+IF (LFI%LMISOP) WRITE (UNIT=LFI%NULOUT,FMT=*)                     &
+&      'BOUCLE 235, J= ',J,', IARTIC= ',IARTIC,', IDECDE= ',IDECDE
+!
+IF (IARTIC.GE.ICPTTN.AND.IARTIC.LE.ICPTTX) THEN
+  IF (IARTIC.EQ.ICPTTN) ICPTTN=ICPTTN+1
+  IF (IARTIC.EQ.ICPTTX) ICPTTX=ICPTTX-1
+  INDIC1=INDIK1
+  INDIC2=INDIK2
+!
+!          ON FILTRE LES ARTICLES PHYSIQUES DEJA STOCKES DANS DES PAGES
+!        DE DONNEES LORS DE LA PARTIE 2.1 ...
+!
+  DO JI=INDIC1,INDIC2
+!
+  IF (IARTIC.EQ.INUCPL(JI)) THEN
+    IF (JI.EQ.INDIK1) INDIK1=INDIK1+1
+    IF (JI.EQ.INDIK2) INDIK2=INDIK2-1
+    GOTO 231
+  ENDIF
+!
+  ENDDO
+!
+ENDIF
+!
+IDECDE=(IARTIC-IARDEB)*ILARPH-IDCDEB
+INAPHY=IARTIC
+CALL LFILDO_FORT                                           &
+&               (LFI, KREP,INUMER,IARTIC,KTAB(IDECDE+1), &
+&                LFI%NBREAD(KRANG),IFACTM,               &
+&                LFI%YLFIC (KRANG),IRETIN)
+!
+IF (IRETIN.NE.0) THEN
+  GOTO 904
+ENDIF
+
+ENDDO
+!*
+!     2.4 - LECTURE DES ARTICLES PHYSIQUES COMPLETS QUE L'ON PEUT STOC-
+!           KER DANS LES PAGES DE DONNEES "TAMPON".
+!           ( TOUT EN PRESERVANT LES EMPLACEMENTS DE LA PREMIERE ET/OU
+!             DE LA DERNIERE PAGE DE DONNEES, SI INCOMPLETE(S) )
+!-----------------------------------------------------------------------
+!
+DO J=1,INPDTA
+INUMPD=MOD (LFI%NDERPD(KRANG)+J,LFI%JPNPDF)
+!
+241 CONTINUE
+IARTIC=IARTIC+1
+!
+IF (IARTIC.GE.ICPTTN.AND.IARTIC.LE.ICPTTX) THEN
+  IF (IARTIC.EQ.ICPTTN) ICPTTN=ICPTTN+1
+  IF (IARTIC.EQ.ICPTTX) ICPTTX=ICPTTX-1
+  INDIC1=INDIK1
+  INDIC2=INDIK2
+!
+!          ON FILTRE LES ARTICLES PHYSIQUES DEJA STOCKES DANS DES PAGES
+!        DE DONNEES LORS DE LA PARTIE 2.1 ...
+!
+  DO JI=INDIC1,INDIC2
+!
+  IF (IARTIC.EQ.INUCPL(JI)) THEN
+    IF (JI.EQ.INDIK1) INDIK1=INDIK1+1
+    IF (JI.EQ.INDIK2) INDIK2=INDIK2-1
+    GOTO 241
+  ENDIF
+!
+  ENDDO
+!
+ENDIF
+!
+!         SI NECESSAIRE, "VIDAGE" SUR FICHIER DE LA PAGE A UTILISER.
+!
+INAPHY=0
+!
+IF (LFI%LECRPD(INUMPD,KRANG)) THEN
+!
+  CALL LFIVID_FORT                                       &
+&                 (LFI, KREP,KRANG,INUMPD,IFOURT,IRETIN)
+!
+  IF (IRETIN.EQ.1) THEN
+    GOTO 903
+  ELSEIF (IRETIN.EQ.2) THEN
+    GOTO 904
+  ELSEIF (IRETIN.NE.0) THEN
+    GOTO 1001
+  ENDIF
+!
+ENDIF
+!
+!         LECTURE SUR FICHIER DE LA PAGE DE DONNEES TAMPON.
+!
+LFI%NUMAPD(INUMPD,KRANG)=LFI%JPNIL
+INAPHY=IARTIC
+CALL LFILDO_FORT                                            &
+&               (LFI, KREP,INUMER,IARTIC,                 &
+&                LFI%MTAMPD(IXT(1_JPLIKB ,INUMPD,KRANG)), &
+&                LFI%NBREAD(KRANG),IFACTM,                &
+&                LFI%YLFIC (KRANG),IRETIN)
+!
+IF (IRETIN.NE.0) THEN
+  GOTO 904
+ENDIF
+!
+LFI%NUMAPD(INUMPD,KRANG)=IARTIC
+LFI%NLONPD(INUMPD,KRANG)=ILARPH
+IDECDE=(IARTIC-IARDEB)*ILARPH-IDCDEB
+!
+!         TRANSFERT DANS LA ZONE UTILISATEUR.
+!
+DO JD=1,ILARPH
+KTAB(IDECDE+JD)=LFI%MTAMPD(IXT(JD,INUMPD,KRANG))
+ENDDO
+!
+ENDDO
+!
+LFI%NDERPD(KRANG)=MOD (LFI%NDERPD(KRANG)+INPDTA,LFI%JPNPDF)
+!*
+!     2.5 - TRAITEMENT DE LA DERNIERE PAGE DE DONNEES SI ELLE EST
+!           INCOMPLETE, ET SI ON EST DANS L'UN DES 2 CAS SUIVANTS
+!           SOIT ELLE DIFFERE DE LA PREMIERE, SOIT C'EST LA MEME QUE LA
+!           PREMIERE ET ELLE COMMENCE JUSTE EN DEBUT D'ARTICLE.
+!           CETTE PAGE EST CONSERVEE... CAR ON ESPERE QUE L'ACCES
+!           SUIVANT AU FICHIER SERA POUR L'ARTICLE LOGIQUE IMMEDIATEMENT
+!           DERRIERE ( LECTURE SEQUENTIELLE DU FICHIER, PAR EXEMPLE ) .
+!-----------------------------------------------------------------------
+!
+IF (LLDERN) THEN
+!
+  DO J=1,LFI%JPNPDF
+  INUMPJ=MOD (LFI%NDERPD(KRANG)+J,LFI%JPNPDF)
+!
+  IF (LFI%NUMAPD(INUMPJ,KRANG).EQ.IARFIN) THEN
+!
+!           ARTICLE PHYSIQUE CHERCHE EN MEMOIRE.
+!
+    IF (LFI%NLONPD(INUMPJ,KRANG).LT.IDCFIN) THEN
+!
+      IF (IARFIN.GT.LFI%MDES1D(IXM(LFI%JPAXPD,KRANG))) THEN
+        KREP=-16
+        GOTO 1001
+      ELSEIF (LFI%LECRPD(INUMPJ,KRANG)) THEN
+        INAPHY=IARFIN
+        CALL LFILDO_FORT                                   &
+&                       (LFI, KREP,INUMER,IARFIN,IFOURT, &
+&                        LFI%NBREAD(KRANG),IFACTM,       &
+&                        LFI%YLFIC (KRANG),IRETIN)
+!
+        IF (IRETIN.NE.0) THEN
+          GOTO 904
+        ENDIF
+!
+        DO JD=LFI%NLONPD(INUMPJ,KRANG)+1,ILARPH
+        LFI%MTAMPD(IXT(JD,INUMPJ,KRANG))=IFOURT(JD)
+        ENDDO
+!
+      ELSE
+        LFI%NUMAPD(INUMPJ,KRANG)=LFI%JPNIL
+        INAPHY=IARFIN
+        CALL LFILDO_FORT                                     &
+&                (LFI, KREP,INUMER,IARFIN,                 &
+&                 LFI%MTAMPD(IXT(1_JPLIKB ,INUMPJ,KRANG)), &
+&                 LFI%NBREAD(KRANG),IFACTM,                &
+&                 LFI%YLFIC (KRANG),IRETIN)
+!
+        IF (IRETIN.NE.0) THEN
+          GOTO 904
+        ENDIF
+!
+        LFI%NUMAPD(INUMPJ,KRANG)=IARFIN
+      ENDIF
+!
+      LFI%NLONPD(INUMPJ,KRANG)=ILARPH
+    ENDIF
+!
+    INUMPD=INUMPJ
+    GOTO 253
+  ENDIF
+!
+  ENDDO
+!
+!           ARTICLE PHYSIQUE CHERCHE PAS EN MEMOIRE...
+!
+  INUMPD=MOD (1+LFI%NDERPD(KRANG),LFI%JPNPDF)
+  INAPHY=0
+!
+  IF (LFI%LECRPD(INUMPD,KRANG)) THEN
+!
+    CALL LFIVID_FORT                                       &
+&                   (LFI, KREP,KRANG,INUMPD,IFOURT,IRETIN)
+!
+    IF (IRETIN.EQ.1) THEN
+      GOTO 903
+    ELSEIF (IRETIN.EQ.2) THEN
+      GOTO 904
+    ELSEIF (IRETIN.NE.0) THEN
+      GOTO 1001
+    ENDIF
+!
+  ENDIF
+!
+  IF (IARFIN.LE.LFI%MDES1D(IXM(LFI%JPAXPD,KRANG))) THEN
+    LFI%NUMAPD(INUMPD,KRANG)=LFI%JPNIL
+    INAPHY=IARFIN
+    CALL LFILDO_FORT                                            &
+&                   (LFI, KREP,INUMER,IARFIN,                 &
+&                    LFI%MTAMPD(IXT(1_JPLIKB ,INUMPD,KRANG)), &
+&                    LFI%NBREAD(KRANG),IFACTM,                &
+&                    LFI%YLFIC (KRANG),IRETIN)
+!
+    IF (IRETIN.NE.0) THEN
+      GOTO 904
+    ENDIF
+!
+    LFI%NLONPD(INUMPD,KRANG)=ILARPH
+  ELSE
+    LFI%NLONPD(INUMPD,KRANG)=0
+  ENDIF
+!
+  LFI%NUMAPD(INUMPD,KRANG)=IARFIN
+!
+253 CONTINUE
+  IDECDE=(IARFIN-IARDEB)*ILARPH-IDCDEB
+!
+!         COMPLEMENT DE LA PAGE DE DONNEES ASSOCIEE AU DERNIER ARTICLE
+!       PHYSIQUE OU DOIVENT ETRE STOCKEES LES DONNEES A ECRIRE.
+!
+  DO JD=1,IDCFIN
+  KTAB(IDECDE+JD)=LFI%MTAMPD(IXT(JD,INUMPD,KRANG))
+  ENDDO
+!
+  LFI%NDERPD(KRANG)=INUMPD
+ENDIF
+!
+GOTO 1001
+!**
+!     9.  - CI-DESSOUS, ETIQUETTES DE BRANCHEMENT EN CAS D'ERREUR E/S.
+!      AU CAS OU, ON FORCE LE CODE-REPONSE ENTREE/SORTIE A ETRE POSITIF.
+!-----------------------------------------------------------------------
+!
+903 CONTINUE
+IRETOU=1
+CLACTI='WRITE'
+GOTO 909
+!
+904 CONTINUE
+IRETOU=2
+CLACTI='READ'
+!
+909 CONTINUE
+KREP=ABS (KREP)
+IF (INAPHY.NE.0) LFI%NUMAPH(KRANG)=INAPHY
+!**
+!    10.  -  PHASE TERMINALE : MESSAGERIE INTERNE EVENTUELLE,
+!            VIA LE SOUS-PROGRAMME "LFIEMS", PUIS RETOUR.
+!-----------------------------------------------------------------------
+!
+1001 CONTINUE
+LLFATA=LLMOER (KREP,KRANG)
+!
+IF (KREP.EQ.0) THEN
+  KRETIN=0
+ELSEIF (KREP.GT.0) THEN
+  KRETIN=IRETOU
+ELSE
+  KRETIN=3
+ENDIF
+!
+IF (LFI%LMISOP.OR.LLFATA) THEN
+  INIMES=2
+  CLNSPR='LFILED'
+  WRITE (UNIT=CLMESS,FMT='(''KREP='',I4,'', KRANG='',I3,    &
+&  '', KLONG='',I7,'', KRGPIM='',I3,'', KPOSEX='',I8,        &
+&  '', KRETIN='',I2)') KREP,KRANG,KLONG,KRGPIM,KPOSEX,KRETIN
+  CALL LFIEMS_FORT                                  &
+&                 (LFI, INUMER,INIMES,KREP,.FALSE., &
+&                  CLMESS,CLNSPR,CLACTI)
+ENDIF
+!
+IF (LHOOK) CALL DR_HOOK('LFILED_FORT',1,ZHOOK_HANDLE)
+
+CONTAINS
+
+#include "lficom2.ixm.h"
+#include "lficom2.ixt.h"
+#include "lficom2.llmoer.h"
+
+END SUBROUTINE LFILED_FORT
+
+
+
+! Oct-2012 P. Marguinaud 64b LFI
+SUBROUTINE LFILED64                                          &
+&           (KREP, KRANG, KTAB, KLONG, KRGPIM, KPOSEX, KRETIN)
+USE LFIMOD, ONLY : LFI => LFICOM_DEFAULT, &
+&                   LFICOM_DEFAULT_INIT,   &
+&                   NEW_LFI_DEFAULT
+USE LFI_PRECISION
+IMPLICIT NONE
+! Arguments
+INTEGER (KIND=JPLIKB)  KREP                                   !   OUT
+INTEGER (KIND=JPLIKB)  KRANG                                  ! IN   
+INTEGER (KIND=JPLIKB)  KLONG                                  ! IN   
+INTEGER (KIND=JPLIKB)  KTAB       (KLONG)                     ! IN   
+INTEGER (KIND=JPLIKB)  KRGPIM                                 ! IN   
+INTEGER (KIND=JPLIKB)  KPOSEX                                 ! IN   
+INTEGER (KIND=JPLIKB)  KRETIN                                 !   OUT
+
+IF (.NOT. LFICOM_DEFAULT_INIT) CALL NEW_LFI_DEFAULT ()
+
+CALL LFILED_FORT                                          &
+&           (LFI, KREP, KRANG, KTAB, KLONG, KRGPIM, KPOSEX, &
+&           KRETIN)
+
+END SUBROUTINE LFILED64
+
+SUBROUTINE LFILED                                            &
+&           (KREP, KRANG, KTAB, KLONG, KRGPIM, KPOSEX, KRETIN)
+USE LFIMOD, ONLY : LFI => LFICOM_DEFAULT, &
+&                   LFICOM_DEFAULT_INIT,   &
+&                   NEW_LFI_DEFAULT
+USE LFI_PRECISION
+IMPLICIT NONE
+! Arguments
+INTEGER (KIND=JPLIKM)  KREP                                   !   OUT
+INTEGER (KIND=JPLIKM)  KRANG                                  ! IN   
+INTEGER (KIND=JPLIKM)  KLONG                                  ! IN   
+INTEGER (KIND=JPLIKB)  KTAB       (KLONG)                     ! IN   
+INTEGER (KIND=JPLIKM)  KRGPIM                                 ! IN   
+INTEGER (KIND=JPLIKM)  KPOSEX                                 ! IN   
+INTEGER (KIND=JPLIKM)  KRETIN                                 !   OUT
+
+IF (.NOT. LFICOM_DEFAULT_INIT) CALL NEW_LFI_DEFAULT ()
+
+CALL LFILED_MT                                            &
+&           (LFI, KREP, KRANG, KTAB, KLONG, KRGPIM, KPOSEX, &
+&           KRETIN)
+
+END SUBROUTINE LFILED
+
+SUBROUTINE LFILED_MT                                      &
+&           (LFI, KREP, KRANG, KTAB, KLONG, KRGPIM, KPOSEX, &
+&           KRETIN)
+USE LFIMOD, ONLY : LFICOM
+USE LFI_PRECISION
+IMPLICIT NONE
+! Arguments
+TYPE (LFICOM)          LFI                                    ! INOUT
+INTEGER (KIND=JPLIKM)  KREP                                   !   OUT
+INTEGER (KIND=JPLIKM)  KRANG                                  ! IN   
+INTEGER (KIND=JPLIKM)  KLONG                                  ! IN   
+INTEGER (KIND=JPLIKB)  KTAB       (KLONG)                     ! IN   
+INTEGER (KIND=JPLIKM)  KRGPIM                                 ! IN   
+INTEGER (KIND=JPLIKM)  KPOSEX                                 ! IN   
+INTEGER (KIND=JPLIKM)  KRETIN                                 !   OUT
+! Local integers
+INTEGER (KIND=JPLIKB)  IREP                                   !   OUT
+INTEGER (KIND=JPLIKB)  IRANG                                  ! IN   
+INTEGER (KIND=JPLIKB)  ILONG                                  ! IN   
+INTEGER (KIND=JPLIKB)  IRGPIM                                 ! IN   
+INTEGER (KIND=JPLIKB)  IPOSEX                                 ! IN   
+INTEGER (KIND=JPLIKB)  IRETIN                                 !   OUT
+! Convert arguments
+
+IRANG      = INT (     KRANG, JPLIKB)
+ILONG      = INT (     KLONG, JPLIKB)
+IRGPIM     = INT (    KRGPIM, JPLIKB)
+IPOSEX     = INT (    KPOSEX, JPLIKB)
+
+CALL LFILED_FORT                                          &
+&           (LFI, IREP, IRANG, KTAB, ILONG, IRGPIM, IPOSEX, &
+&           IRETIN)
+
+KREP       = INT (      IREP, JPLIKM)
+KRETIN     = INT (    IRETIN, JPLIKM)
+
+END SUBROUTINE LFILED_MT
+
+!INTF KREP            OUT                                                              
+!INTF KRANG         IN                                                                 
+!INTF KTAB          IN    DIMS=KLONG                     KIND=JPLIKB                   
+!INTF KLONG         IN                                                                 
+!INTF KRGPIM        IN                                                                 
+!INTF KPOSEX        IN                                                                 
+!INTF KRETIN          OUT                                                              

@@ -1,0 +1,109 @@
+! Oct-2012 P. Marguinaud 64b LFI
+! Jan-2011 P. Marguinaud Thread-safe LFI
+
+SUBROUTINE LFIVER_FORT                       &
+&                     (LFI, PVEROU, CDSENS )
+USE LFIMOD, ONLY : LFICOM
+USE PARKIND1, ONLY : JPRB
+USE YOMHOOK , ONLY : LHOOK, DR_HOOK
+USE LFI_PRECISION
+IMPLICIT NONE
+!****
+!        CE S/P EST CHARGE, EN MODE MULTI-TASKING, DE TOUTES LES
+!        ACTIONS CONCERNANT LES "VERROUS" .
+!**
+!     ARGUMENTS : PVEROU ==> VERROU CONCERNE;
+!                 CDSENS ==> SUFFIXE DE L'ACTION SOUHAITEE.
+!                            ('ASGN','ON','OFF','REL')
+!
+!
+TYPE(LFICOM) :: LFI
+CHARACTER CDSENS*(*)
+!
+INTEGER (KIND=JPLIKB) INUMER, IREP, INIMES
+!
+REAL (KIND=JPDBLR) PVEROU
+CHARACTER(LEN=LFI%JPLSPX) CLNSPR
+CHARACTER(LEN=LFI%JPLMES) CLMESS
+CHARACTER(LEN=LFI%JPLFTX) CLACTI
+LOGICAL LLFATA
+
+!
+REAL(KIND=JPRB) :: ZHOOK_HANDLE
+IF (LHOOK) CALL DR_HOOK('LFIVER_FORT',0,ZHOOK_HANDLE)
+CLACTI=''
+
+INUMER=LFI%JPNIL
+INIMES=0
+IREP=-3
+LLFATA=LFI%NERFAG.NE.2
+CLNSPR='LFIVER'
+
+CALL LFIEMS_FORT                                       &
+&               (LFI,INUMER,INIMES,IREP,LLFATA,CLMESS, &
+&                CLNSPR,CLACTI)
+!
+IF (LHOOK) CALL DR_HOOK('LFIVER_FORT',1,ZHOOK_HANDLE)
+END SUBROUTINE LFIVER_FORT
+
+
+
+
+! Oct-2012 P. Marguinaud 64b LFI
+SUBROUTINE LFIVER64           &
+&           (PVEROU, CDSENS)
+USE LFIMOD, ONLY : LFI => LFICOM_DEFAULT, &
+&                   LFICOM_DEFAULT_INIT,   &
+&                   NEW_LFI_DEFAULT
+USE LFI_PRECISION
+IMPLICIT NONE
+! Arguments
+REAL (KIND=JPDBLR)     PVEROU                                 ! IN   
+CHARACTER (LEN=*)      CDSENS                                 ! IN   
+
+IF (.NOT. LFICOM_DEFAULT_INIT) CALL NEW_LFI_DEFAULT ()
+
+CALL LFIVER_FORT                 &
+&           (LFI, PVEROU, CDSENS)
+
+END SUBROUTINE LFIVER64
+
+SUBROUTINE LFIVER             &
+&           (PVEROU, CDSENS)
+USE LFIMOD, ONLY : LFI => LFICOM_DEFAULT, &
+&                   LFICOM_DEFAULT_INIT,   &
+&                   NEW_LFI_DEFAULT
+USE LFI_PRECISION
+IMPLICIT NONE
+! Arguments
+REAL (KIND=JPDBLR)     PVEROU                                 ! IN   
+CHARACTER (LEN=*)      CDSENS                                 ! IN   
+
+IF (.NOT. LFICOM_DEFAULT_INIT) CALL NEW_LFI_DEFAULT ()
+
+CALL LFIVER_MT                  &
+&           (LFI, PVEROU, CDSENS)
+
+END SUBROUTINE LFIVER
+
+SUBROUTINE LFIVER_MT             &
+&           (LFI, PVEROU, CDSENS)
+USE LFIMOD, ONLY : LFICOM
+USE LFI_PRECISION
+IMPLICIT NONE
+! Arguments
+TYPE (LFICOM)          LFI                                    ! INOUT
+REAL (KIND=JPDBLR)     PVEROU                                 ! IN   
+CHARACTER (LEN=*)      CDSENS                                 ! IN   
+! Local integers
+! Convert arguments
+
+
+CALL LFIVER_FORT                 &
+&           (LFI, PVEROU, CDSENS)
+
+
+END SUBROUTINE LFIVER_MT
+
+!INTF PVEROU        IN    
+!INTF CDSENS        IN    

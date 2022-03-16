@@ -1,0 +1,914 @@
+!OPTIONS NOOPT
+MODULE DISTIO_MIX
+USE PARKIND1, ONLY : JPRB
+USE YOMHOOK , ONLY : LHOOK, DR_HOOK
+
+USE PARKIND1  ,ONLY : JPIM     ,JPRB
+#ifdef SFX_MPI
+USE MPL_MODULE
+#endif
+
+IMPLICIT NONE
+
+PRIVATE
+
+INTERFACE COMM_ARRAY
+MODULE PROCEDURE REAL_COMM_ARRAY, INT_COMM_ARRAY
+END INTERFACE
+
+PUBLIC ::&
+     &DIST_OPEN, DIST_CLOSE, &
+     &DIST_INQUIRE, &
+     &GET_NEXT_UNIT, GET_MRFSDIR, GET_DIST_MAXFILESIZE,&
+     &MRFSFILE
+
+INTEGER(KIND=JPIM) :: MYPROC, NPROC
+INTEGER(KIND=JPIM) :: IRET, ILEN, IROOT, ITAG, ICOMM, IWORDS
+
+INTEGER(KIND=JPIM), PARAMETER :: JPE_BYTE    = 0
+INTEGER(KIND=JPIM), PARAMETER :: JPE_INTEGER = 1
+INTEGER(KIND=JPIM), PARAMETER :: JPE_REAL    = 2
+INTEGER(KIND=JPIM), PARAMETER :: JPINTBYT    = 4
+INTEGER(KIND=JPIM), PARAMETER :: JPREABYT    = 8
+
+CHARACTER(LEN=*), PARAMETER :: NOTDEF = 'NOT DEFINED'
+CHARACTER(LEN=255), SAVE :: MRFSDIR          = NOTDEF
+CHARACTER(LEN=12),  SAVE :: DIST_MAXFILESIZE = NOTDEF
+
+LOGICAL, SAVE :: LL_HAS_MRFSDIR = .FALSE.
+INTEGER(KIND=JPIM), SAVE :: MAXFILESIZE    = 8 * 1024 * 1024 ! 8MB
+
+INTEGER(KIND=JPIM), PARAMETER :: JP_MAXUNIT = 99
+INTEGER(KIND=JPIM), PARAMETER :: JP_MINUNIT =  0
+
+CONTAINS
+
+!=======================================================================
+!---- Public routines ----
+!=======================================================================
+
+SUBROUTINE DIST_CLOSE(UNIT, FILE, STATUS, IOSTAT)
+
+INTEGER(KIND=JPIM), INTENT(IN)                    :: UNIT
+CHARACTER(LEN=*), INTENT(IN), OPTIONAL :: FILE, STATUS
+INTEGER(KIND=JPIM), INTENT(OUT),         OPTIONAL :: IOSTAT
+
+INTEGER(KIND=JPIM) :: IERR, I
+LOGICAL OPENED
+CHARACTER(LEN=255) CL_FILE
+CHARACTER(LEN=80)  CL_STATUS
+
+REAL(KIND=JPRB) :: ZHOOK_HANDLE
+IF (LHOOK) CALL DR_HOOK('DISTIO_MIX:DIST_CLOSE',0,ZHOOK_HANDLE)
+IERR = 0
+
+IF (PRESENT(STATUS)) THEN
+  CL_STATUS = ADJUSTL(STATUS)
+  CALL TOUPPER(CL_STATUS)
+ELSE
+  CL_STATUS = 'KEEP'
+ENDIF
+
+INQUIRE(UNIT=UNIT, OPENED=OPENED)
+
+IF (OPENED) THEN
+  IF (PRESENT(FILE) .AND. .NOT. PRESENT(STATUS)) THEN
+!--   Try to remove the "file" if in MRFSDIR to conserve MRFS-space 
+!     (after all, the "file" was supposed to be a tmp-file)
+
+    CALL GET_MRFSDIR()
+    IF (LL_HAS_MRFSDIR) THEN
+      CL_FILE = ADJUSTL(FILE)
+      I = INDEX(TRIM(CL_FILE), TRIM(MRFSDIR))
+      IF (I > 0) CL_STATUS = 'DELETE'
+    ENDIF
+  ENDIF
+
+  CLOSE(UNIT, STATUS=TRIM(CL_STATUS), IOSTAT=IERR)
+ENDIF
+
+IF (PRESENT(IOSTAT)) THEN
+  IOSTAT = IERR
+ENDIF
+IF (LHOOK) CALL DR_HOOK('DISTIO_MIX:DIST_CLOSE',1,ZHOOK_HANDLE)
+END SUBROUTINE DIST_CLOSE
+
+!=======================================================================
+
+SUBROUTINE DIST_INQUIRE(FILE, EXIST)
+
+CHARACTER(LEN=*), INTENT(IN)   :: FILE
+LOGICAL,          INTENT(OUT)  :: EXIST
+INTEGER(KIND=JPIM) :: I_EXIST
+
+REAL(KIND=JPRB) :: ZHOOK_HANDLE
+IF (LHOOK) CALL DR_HOOK('DISTIO_MIX:DIST_INQUIRE',0,ZHOOK_HANDLE)
+I_EXIST = 0
+#ifdef SFX_MPI
+NPROC  = MPL_NUMPROC
+MYPROC = MPL_RANK
+#else
+NPROC = 1
+MYPROC = 0
+#endif
+
+IF (MYPROC == 1) THEN
+  INQUIRE(FILE=FILE, EXIST=EXIST)
+  IF (EXIST) I_EXIST = 1
+ENDIF
+
+IF (NPROC > 1) THEN
+!--   Broadcast the file existence status
+  ILEN  = 1
+  IROOT = 1
+  ITAG  = 500
+  ICOMM = 0
+#ifdef SFX_MPI
+  CALL MPL_BROADCAST(I_EXIST,KROOT=IROOT,KTAG=ITAG, &
+   & CDSTRING='DIST_INQUIRE:')
+#endif
+ENDIF
+
+EXIST = (I_EXIST == 1)
+IF (LHOOK) CALL DR_HOOK('DISTIO_MIX:DIST_INQUIRE',1,ZHOOK_HANDLE)
+END SUBROUTINE DIST_INQUIRE
+
+!=======================================================================
+
+SUBROUTINE DIST_OPEN(&
+!--   Optional parameters (FORTRAN-OPEN style) --
+     &unit, file, iostat,&
+     &status, form, action,&
+     &access, recl, &
+     &fmt,&
+!--   Optional ARRAYs (real ARRAY has presedence over the integer ARRAY)
+     &ARRAY, IARRAY,&
+!--   The actual filename on which the I/O is (was) applied to
+     &localfile)
+
+
+!..   A subroutine to open the same file only by the processor#1
+!     and then distribute it to the other processors via
+!     fast communication network.
+
+!     Remote processors save the contents into their (preferably)
+!     memory resident file system and open it there and return
+!     a handle.
+
+!     ... or ...
+
+!     if one of the ARRAYs are provided, then data is read into it
+!     by processor#1 and distributed to others
+
+!     NOTE: Initially meant only for Read/Only -files
+
+!     Algorithm(s) used:
+!     ==================
+
+!     (1) Processor#1 (raw-)reads the file
+!         and sends it to all other processors (incl. itself)
+!     (2) All processors store the bytes into their memory resident
+!         file system and issue appropriate OPEN to that file
+!     (3) File is silently closed if unit was not specified
+
+!     except if:
+
+!        If one of the arrays ARRAY or IARRAY exist, then the phase (2)
+!        is skipped, but ARRAY/IARRAY is read in by proc#1 and xferred
+!        to other PEs via network.
+
+!        After this file is closed if no unit number was given
+
+!     If environment-value MRFSDIR is not defined, then
+!     all processors are forced to OPEN the same (shared) file.
+
+!     Author: Sami Saarinen, ECMWF, 18/11/97
+
+
+
+
+!--   unit : I/O-channel
+INTEGER(KIND=JPIM), INTENT(IN), OPTIONAL       :: UNIT
+
+!--   file: Target file, that processor#1 reads
+CHARACTER(LEN=*), INTENT(IN), OPTIONAL :: FILE
+
+!--   iostat: An error code from the latest I/O operation
+!             OR internal error from the DISTIO_MIX-routine (iostat < -10000)
+!     -10001 : Both file name AND unit number were not given
+!     -10002 : File is not read/only
+!     -10004 : Free format, textual direct access read not allowed
+!     -10008 : Direct access file has record length <= 0
+!     -10016 : Neither unit number, nor ARRAY/IARRAY were supplied
+!     -10032 : Format error
+!     or combination of internal errors; find out via "mod(-ierr,10000)"
+
+INTEGER(KIND=JPIM), INTENT(OUT), OPTIONAL :: IOSTAT
+
+!--   status, form, action, access, recl: FORTRAN-OPEN's keywords
+CHARACTER(LEN=*), INTENT(IN), OPTIONAL :: STATUS, FORM, ACTION, ACCESS
+INTEGER(KIND=JPIM), INTENT(IN), OPTIONAL :: RECL
+
+!--   fmt: The possible format to be used when reading an ARRAY/IARRAY
+CHARACTER(LEN=*), INTENT(IN), OPTIONAL :: FMT
+
+!--   ARRAY: Real array
+REAL(KIND=JPRB), INTENT(OUT), OPTIONAL :: ARRAY(:)
+
+!--   IARRAY: Integer array
+INTEGER(KIND=JPIM), INTENT(OUT), OPTIONAL :: IARRAY(:)
+
+!--   localfile: The actual file name where the handle 'unit' (possibly)  refers to
+!              An output parameter that (usually) has a value $MRFSDIR/file
+CHARACTER(LEN=*), INTENT(OUT), OPTIONAL :: LOCALFILE
+
+
+! === END OF INTERFACE BLOCK ===
+INTEGER(KIND=JPIM) :: IERR, ITMP
+INTEGER(KIND=JPIM) :: I_UNIT, I_RECL
+LOGICAL LL_OPEN, LL_CLOSE, LL_HAS_BEEN_COMMUNICATED
+LOGICAL LL_READ_ONLY, LL_FORMATTED, LL_DIRECT_ACCESS
+LOGICAL LL_REAL_ARRAY, LL_HAS_ARRAY
+CHARACTER(LEN=255) CL_FILE, CL_TMPNAME
+CHARACTER(LEN= 80) CL_STATUS, CL_ACTION, CL_FORM, CL_ACCESS, CL_FMT
+
+!234567890-234567890-234567890-234567890-234567890-234567890-234567890--
+
+REAL(KIND=JPRB) :: ZHOOK_HANDLE
+IF (LHOOK) CALL DR_HOOK('DISTIO_MIX:DIST_OPEN',0,ZHOOK_HANDLE)
+IERR = 0
+#ifdef SFX_MPI
+NPROC  = MPL_NUMPROC
+MYPROC = MPL_RANK
+#else
+NPROC = 1
+MYPROC = 0
+#endif
+
+LL_OPEN  = .FALSE.
+LL_CLOSE = .FALSE.
+
+!--   unit
+IF (PRESENT(UNIT)) THEN
+  I_UNIT = UNIT
+ELSE
+  CALL GET_NEXT_UNIT(I_UNIT)
+  LL_CLOSE = .TRUE.
+ENDIF
+
+!--   file
+IF (PRESENT(FILE)) THEN
+  CL_FILE = ADJUSTL(FILE)
+ELSE
+  IF (I_UNIT >= JP_MINUNIT .AND. I_UNIT <= JP_MAXUNIT) THEN
+    WRITE(CL_FILE,"('fort.',i4)") I_UNIT
+    CALL STRIP(CL_FILE,' ') ! File became "fort.<unit>"
+  ELSE
+    CL_FILE = NOTDEF
+    IERR = IERR + 1
+  ENDIF
+ENDIF
+
+!--   status
+IF (PRESENT(STATUS)) THEN
+  CL_STATUS = ADJUSTL(STATUS)
+  CALL TOUPPER(CL_STATUS)
+ELSE
+  CL_STATUS = 'OLD'
+ENDIF
+
+!--   action
+IF (PRESENT(ACTION)) THEN
+  CL_ACTION = ADJUSTL(ACTION)
+  CALL TOUPPER(CL_ACTION)
+ELSE
+  CL_ACTION = 'READ'
+ENDIF
+
+LL_READ_ONLY = (&
+     &(CL_STATUS == 'OLD' .OR. CL_STATUS == 'UNKNOWN')&
+     &.AND. &
+     &(CL_ACTION == 'READ') )
+
+IF (.NOT. LL_READ_ONLY) THEN
+  IERR = IERR + 2
+ENDIF
+
+!--   fmt
+IF (PRESENT(FMT)) THEN
+  CL_FMT = FMT
+ELSE
+  CL_FMT = '*'
+ENDIF
+
+!--   form
+IF (PRESENT(FORM)) THEN
+  CL_FORM = ADJUSTL(FORM)
+  CALL TOUPPER(CL_FORM)
+ELSE
+  CL_FORM = 'FORMATTED'
+ENDIF
+
+LL_FORMATTED = (CL_FORM == 'FORMATTED')
+
+IF (LL_FORMATTED) THEN
+  IF (CL_FMT /= '*') THEN
+    ITMP = LEN_TRIM(CL_FMT)
+    IF (ITMP <= 2) THEN
+      IERR = IERR + 32
+    ELSE IF (CL_FMT(1:1) /= '(' .AND. CL_FMT(ITMP:ITMP) /= ')') THEN
+      IERR = IERR + 32
+    ENDIF
+  ENDIF
+ENDIF
+
+!--   access
+IF (PRESENT(ACCESS)) THEN
+  CL_ACCESS = ADJUSTL(ACCESS)
+  CALL TOUPPER(CL_ACCESS)
+ELSE
+  CL_ACCESS = 'SEQUENTIAL'
+ENDIF
+
+LL_DIRECT_ACCESS = (CL_ACCESS == 'DIRECT')
+
+IF ( LL_DIRECT_ACCESS .AND. LL_FORMATTED .AND. CL_FMT == '*') THEN
+  IERR = IERR + 4
+ENDIF
+
+!--   recl
+IF (PRESENT(RECL)) THEN
+  I_RECL = RECL
+ELSE
+  I_RECL = 0
+ENDIF
+
+IF (LL_DIRECT_ACCESS .AND. I_RECL <= 0) THEN
+  IERR = IERR + 8
+ENDIF
+
+!--   ARRAY or IARRAY
+LL_REAL_ARRAY = .TRUE.
+
+IF (PRESENT(ARRAY)) THEN
+  LL_REAL_ARRAY = .TRUE.
+ELSE IF (PRESENT(IARRAY)) THEN
+  LL_REAL_ARRAY = .FALSE.
+ENDIF
+
+LL_HAS_ARRAY = (PRESENT(ARRAY) .OR. PRESENT(IARRAY))
+
+IF (.NOT. LL_HAS_ARRAY .AND. .NOT. PRESENT(UNIT)) THEN
+  IERR = IERR + 16
+ENDIF
+
+!=======================================================================
+IF (IERR /= 0) IERR = -(IERR + 10000)
+IF (IERR < 0) GOTO 9999
+!=======================================================================
+
+!--   Is the memory resident file system available ?
+CALL GET_MRFSDIR()
+
+!--   Max file size that is allowed to go over the network
+CALL GET_DIST_MAXFILESIZE()
+
+!=======================================================================
+IF (.NOT. LL_HAS_ARRAY) THEN
+!--   Communicate the file over the network
+  CALL COMM_FILE(CL_FILE, LL_HAS_BEEN_COMMUNICATED)
+  LL_OPEN = .TRUE.
+ELSE
+  LL_HAS_BEEN_COMMUNICATED = .FALSE.
+  LL_OPEN  = (MYPROC == 1)
+  LL_CLOSE = LL_OPEN
+ENDIF
+!=======================================================================
+
+IF (LL_HAS_BEEN_COMMUNICATED) THEN
+  CALL MAKE_LOCAL_FILENAME(CL_TMPNAME, CL_FILE)
+  CL_FILE = CL_TMPNAME
+ENDIF
+
+IF (PRESENT(LOCALFILE)) THEN
+  IF (SCAN(CL_FILE,'/') > 0) THEN
+    LOCALFILE = ADJUSTL(CL_FILE)
+  ELSE
+    LOCALFILE = './'//ADJUSTL(CL_FILE)
+  ENDIF
+ENDIF
+
+IF (LL_OPEN) THEN
+!--   Open the file via Fortran-OPEN
+
+  IF (LL_FORMATTED) THEN
+
+!--   Formatted file
+    IF (LL_DIRECT_ACCESS) THEN
+!---  .. Direct access
+      OPEN(UNIT=I_UNIT, FILE=TRIM(CL_FILE),&
+       &STATUS=TRIM(CL_STATUS), FORM='FORMATTED',&
+       &ACCESS='DIRECT', RECL=I_RECL, ACTION='READ',&
+       &IOSTAT=IERR, ERR=9999)
+    ELSE
+!---  .. Sequential
+      OPEN(UNIT=I_UNIT, FILE=TRIM(CL_FILE),&
+       &STATUS=TRIM(CL_STATUS), FORM='FORMATTED',&
+       &ACCESS='SEQUENTIAL', ACTION='READ',&
+       &POSITION='REWIND',&
+       &IOSTAT=IERR, ERR=9999)
+    ENDIF
+
+  ELSE
+
+!--   Unformatted file
+    IF (LL_DIRECT_ACCESS) THEN
+!---  .. Direct access
+      OPEN(UNIT=I_UNIT, FILE=TRIM(CL_FILE),&
+       &STATUS=TRIM(CL_STATUS), FORM='UNFORMATTED',&
+       &ACCESS='DIRECT', RECL=I_RECL, ACTION='READ',&
+       &IOSTAT=IERR, ERR=9999)
+    ELSE
+!---  .. Sequential
+      OPEN(UNIT=I_UNIT, FILE=TRIM(CL_FILE),&
+       &STATUS=TRIM(CL_STATUS), FORM='UNFORMATTED',&
+       &ACCESS='SEQUENTIAL', ACTION='READ',&
+       &POSITION='REWIND',&
+       &IOSTAT=IERR, ERR=9999)
+    ENDIF
+
+  ENDIF
+
+ENDIF
+
+!=======================================================================
+IF (LL_HAS_ARRAY) THEN
+  IF (LL_REAL_ARRAY) THEN
+    CALL COMM_ARRAY(I_UNIT, ARRAY,&
+     &TRIM(ADJUSTL(CL_FMT)), IERR,&
+     &LL_DIRECT_ACCESS, LL_FORMATTED)
+  ELSE
+    CALL COMM_ARRAY(I_UNIT, IARRAY,&
+     &TRIM(ADJUSTL(CL_FMT)), IERR,&
+     &LL_DIRECT_ACCESS, LL_FORMATTED)
+  ENDIF
+ENDIF
+
+IF (IERR /= 0) GOTO 9999
+!=======================================================================
+
+IF (LL_CLOSE) CLOSE(I_UNIT, IOSTAT=IERR, ERR=9999)
+
+9999 CONTINUE
+IF (PRESENT(IOSTAT)) THEN
+  IOSTAT = IERR
+ENDIF
+IF (LHOOK) CALL DR_HOOK('DISTIO_MIX:DIST_OPEN',1,ZHOOK_HANDLE)
+END SUBROUTINE DIST_OPEN
+
+!=======================================================================
+
+SUBROUTINE GET_NEXT_UNIT(KUNIT)
+
+INTEGER(KIND=JPIM), INTENT(OUT) :: KUNIT
+INTEGER(KIND=JPIM) :: J
+LOGICAL LOPENED
+REAL(KIND=JPRB) :: ZHOOK_HANDLE
+IF (LHOOK) CALL DR_HOOK('DISTIO_MIX:GET_NEXT_UNIT',0,ZHOOK_HANDLE)
+KUNIT = -1
+DO J=JP_MAXUNIT, JP_MINUNIT, -1
+  INQUIRE(UNIT=J, OPENED=LOPENED)
+  IF (.NOT.LOPENED) THEN
+    KUNIT = J
+    IF (LHOOK) CALL DR_HOOK('DISTIO_MIX:GET_NEXT_UNIT',1,ZHOOK_HANDLE)
+    RETURN
+  ENDIF
+ENDDO
+IF (LHOOK) CALL DR_HOOK('DISTIO_MIX:GET_NEXT_UNIT',1,ZHOOK_HANDLE)
+END SUBROUTINE GET_NEXT_UNIT
+
+SUBROUTINE GET_MRFSDIR(KOUT, CDOUT)
+!--   Look for MRFSDIR (memory resident file system) environment variable
+
+INTEGER(KIND=JPIM), INTENT(IN)          , OPTIONAL :: KOUT
+CHARACTER(LEN=*), INTENT(OUT), OPTIONAL :: CDOUT
+INTEGER(KIND=JPIM) :: I
+REAL(KIND=JPRB) :: ZHOOK_HANDLE
+IF (LHOOK) CALL DR_HOOK('DISTIO_MIX:GET_MRFSDIR',0,ZHOOK_HANDLE)
+IF (MRFSDIR == NOTDEF) THEN
+  CALL GET_ENVIRONMENT_VARIABLE('DIST_MRFSPATH', MRFSDIR)
+  MRFSDIR = ADJUSTL(MRFSDIR)
+  I = LEN_TRIM(MRFSDIR)
+  LOOP: DO WHILE (I > 0)
+!     Remove any trailing slashes '/'
+    IF (MRFSDIR(I:I) /= '/') EXIT LOOP
+    MRFSDIR(I:I) = ' '
+    I = I - 1
+  ENDDO LOOP
+  IF (MRFSDIR == '.') MRFSDIR = ' '
+  LL_HAS_MRFSDIR = (MRFSDIR /= ' ')
+
+  IF (PRESENT(KOUT)) THEN
+#ifdef SFX_MPI
+    MYPROC = MPL_RANK
+#else
+    MYPROC = 0
+#endif
+    IF (MYPROC == 1) THEN
+      IF (LL_HAS_MRFSDIR) THEN
+        WRITE(KOUT,*)'GET_MRFSDIR: MRFSDIR="'//TRIM(MRFSDIR)//'"'
+      ELSE
+        WRITE(KOUT,*)'GET_MRFSDIR: MRFSDIR not present'
+      ENDIF
+    ENDIF
+  ENDIF
+ENDIF
+IF (PRESENT(CDOUT)) THEN
+  CDOUT = MRFSDIR
+ENDIF
+IF (LHOOK) CALL DR_HOOK('DISTIO_MIX:GET_MRFSDIR',1,ZHOOK_HANDLE)
+END SUBROUTINE GET_MRFSDIR
+
+SUBROUTINE GET_DIST_MAXFILESIZE(KOUT, KMAXSIZE)
+!--   Get the maximum permissible size of the file to be communicated
+!     This option is to avoid excessively large files dealt
+!     with this concept
+
+INTEGER(KIND=JPIM), INTENT(IN) , OPTIONAL :: KOUT
+INTEGER(KIND=JPIM), INTENT(OUT), OPTIONAL :: KMAXSIZE
+REAL(KIND=JPRB) :: ZHOOK_HANDLE
+IF (LHOOK) CALL DR_HOOK('DISTIO_MIX:GET_DIST_MAXFILESIZE',0,ZHOOK_HANDLE)
+IF (DIST_MAXFILESIZE == NOTDEF) THEN
+  CALL GET_ENVIRONMENT_VARIABLE('DIST_MAXFILESIZE', DIST_MAXFILESIZE)
+  IF (DIST_MAXFILESIZE /= ' ') THEN
+    DIST_MAXFILESIZE = TRIM(ADJUSTL(DIST_MAXFILESIZE))
+    READ(DIST_MAXFILESIZE,'(i12)',ERR=9999) MAXFILESIZE
+  ENDIF
+  9999 CONTINUE
+  MAXFILESIZE = MAX(-1,MAXFILESIZE)
+
+  IF (PRESENT(KOUT)) THEN
+#ifdef SFX_MPI
+    MYPROC = MPL_RANK
+#else
+    MYPROC = 0
+#endif
+    IF (MYPROC == 1) THEN
+      WRITE(KOUT,'(1x,2a,i12,a)')&
+       &'GET_DIST_MAXFILESIZE: ',&
+       &'Largest file to be distributed: ',&
+       &MAXFILESIZE,' bytes'
+    ENDIF
+  ENDIF
+ENDIF
+IF (PRESENT(KMAXSIZE)) THEN
+  KMAXSIZE = MAXFILESIZE
+ENDIF
+IF (LHOOK) CALL DR_HOOK('DISTIO_MIX:GET_DIST_MAXFILESIZE',1,ZHOOK_HANDLE)
+END SUBROUTINE GET_DIST_MAXFILESIZE
+
+!=======================================================================
+!---- Private routines ----
+!=======================================================================
+
+SUBROUTINE TOUPPER(CDS)
+
+!--   Converts lowercase letters to uppercase
+CHARACTER(LEN=*), INTENT(INOUT) :: CDS
+INTEGER(KIND=JPIM), PARAMETER :: ICH_A = ICHAR('A')
+INTEGER(KIND=JPIM), PARAMETER :: ICHA  = ICHAR('a')
+INTEGER(KIND=JPIM), PARAMETER :: ICHZ  = ICHAR('z')
+INTEGER(KIND=JPIM) :: I, ICH, NEW_ICH, ILEN
+CHARACTER(LEN=1) CH
+REAL(KIND=JPRB) :: ZHOOK_HANDLE
+IF (LHOOK) CALL DR_HOOK('DISTIO_MIX:TOUPPER',0,ZHOOK_HANDLE)
+ILEN = LEN_TRIM(CDS)
+DO I=1,ILEN
+  CH = CDS(I:I)
+  ICH = ICHAR(CH)
+  IF ( ICH >= ICHA .AND. ICH <= ICHZ ) THEN
+    NEW_ICH = ICH + (ICH_A - ICHA)
+    CH = CHAR(NEW_ICH)
+    CDS(I:I) = CH
+  ENDIF
+ENDDO
+IF (LHOOK) CALL DR_HOOK('DISTIO_MIX:TOUPPER',1,ZHOOK_HANDLE)
+END SUBROUTINE TOUPPER
+
+SUBROUTINE STRIP(CDS,CDWHAT)
+
+!--   Strips off all possible characters 'cdwhat'
+CHARACTER(LEN=*), INTENT(INOUT) :: CDS
+CHARACTER(LEN=1), INTENT(IN)    :: CDWHAT
+CHARACTER(LEN=LEN(CDS)) CLS
+INTEGER(KIND=JPIM) :: I, J, ILEN
+CHARACTER(LEN=1) CH
+REAL(KIND=JPRB) :: ZHOOK_HANDLE
+IF (LHOOK) CALL DR_HOOK('DISTIO_MIX:STRIP',0,ZHOOK_HANDLE)
+CLS = ' '
+J = 0
+ILEN = LEN_TRIM(CDS)
+DO I=1,ILEN
+  CH = CDS(I:I)
+  IF (CH /= CDWHAT) THEN
+    J = J + 1
+    CLS(J:J) = CH
+  ENDIF
+ENDDO
+CDS = TRIM(ADJUSTL(CLS))
+IF (LHOOK) CALL DR_HOOK('DISTIO_MIX:STRIP',1,ZHOOK_HANDLE)
+END SUBROUTINE STRIP
+
+SUBROUTINE MAKE_LOCAL_FILENAME(CLFILE, CDFILE)
+
+CHARACTER(LEN=*), INTENT(OUT) :: CLFILE
+CHARACTER(LEN=*), INTENT(IN)  :: CDFILE
+LOGICAL, PARAMETER :: LL_REVERSE = .TRUE.
+INTEGER(KIND=JPIM) :: I
+REAL(KIND=JPRB) :: ZHOOK_HANDLE
+IF (LHOOK) CALL DR_HOOK('DISTIO_MIX:MAKE_LOCAL_FILENAME',0,ZHOOK_HANDLE)
+CLFILE = ADJUSTL(CDFILE)
+I = SCAN(CLFILE,'/',LL_REVERSE) ! The basename after the path
+IF (I > 0) CLFILE(1:I) = ' '
+CLFILE = TRIM(ADJUSTL(CLFILE))
+CLFILE = TRIM(ADJUSTL(MRFSDIR))//"/"//CLFILE ! $MRFSDIR/filename
+WRITE(CLFILE,"(a,'.',i4.4)") TRIM(ADJUSTL(CLFILE)),MYPROC
+IF (LHOOK) CALL DR_HOOK('DISTIO_MIX:MAKE_LOCAL_FILENAME',1,ZHOOK_HANDLE)
+END SUBROUTINE MAKE_LOCAL_FILENAME
+
+SUBROUTINE COMM_FILE(CDFILE, LDSTATUS)
+!--   Communicate the file
+
+CHARACTER(LEN=*), INTENT(IN) :: CDFILE
+LOGICAL, INTENT(OUT)         :: LDSTATUS
+
+INTEGER(KIND=JPIM) :: IFILESIZE
+INTEGER(KIND=JPIM), ALLOCATABLE :: FILE_CONTENTS(:)
+LOGICAL LL_HAS_BEEN_COMMUNICATED
+CHARACTER(LEN=255) CL_TMPNAME
+CHARACTER(LEN=4)   CL_PROCID
+
+REAL(KIND=JPRB) :: ZHOOK_HANDLE
+IF (LHOOK) CALL DR_HOOK('DISTIO_MIX:COMM_FILE',0,ZHOOK_HANDLE)
+LL_HAS_BEEN_COMMUNICATED = .FALSE.
+
+IF (NPROC <= 1) GOTO 9999
+
+IFILESIZE = 0
+
+IF (LL_HAS_MRFSDIR) THEN
+  IF (MYPROC == 1) THEN
+    CALL UTIL_FILESIZE(TRIM(CDFILE), IFILESIZE)
+    IF (MAXFILESIZE /= -1) THEN
+      IF (IFILESIZE > MAXFILESIZE) IFILESIZE = -IFILESIZE
+    ENDIF
+  ENDIF
+ENDIF
+
+IROOT = 1
+ITAG  = 100
+ICOMM = 0
+#ifdef SFX_MPI
+CALL MPL_BROADCAST(IFILESIZE,KROOT=IROOT,KTAG=ITAG, &
+   & CDSTRING='COMM_FILE:')
+#endif
+IF (IFILESIZE > 0) THEN
+  IWORDS = (IFILESIZE + JPINTBYT - 1)/JPINTBYT
+  ALLOCATE(FILE_CONTENTS(IWORDS))
+
+!--   Only processor#1 reads it
+  IF (MYPROC == 1) THEN
+    CALL UTIL_READRAW(TRIM(CDFILE), FILE_CONTENTS, IFILESIZE, IRET)
+    IF (IRET /= IFILESIZE) THEN
+#ifdef SFX_MPI
+      CALL MPL_MESSAGE(LDABORT=.TRUE., &
+        & CDMESSAGE='File "'//TRIM(CDFILE)//'" read error at proc#1', &
+        & CDSTRING='** Problems with UTIL_READRAW **')
+#endif
+    ENDIF
+  ENDIF
+
+!--   ... and then broadcasts to all
+
+  ILEN  = IWORDS
+  IROOT = 1
+  ITAG  = 200
+  ICOMM = 0
+#ifdef SFX_MPI
+  CALL MPL_BROADCAST(FILE_CONTENTS(1:ILEN),KROOT=IROOT,KTAG=ITAG, &
+   & CDSTRING='COMM_FILE:')
+#endif
+
+!--   ... and finally store it into the *local* MRFSDIR
+
+  CALL MAKE_LOCAL_FILENAME(CL_TMPNAME, CDFILE)
+
+  CALL UTIL_WRITERAW(TRIM(CL_TMPNAME), FILE_CONTENTS, IFILESIZE, IRET)
+  IF (IRET /= IFILESIZE) THEN
+    WRITE(CL_PROCID,'(i4)') MYPROC
+#ifdef SFX_MPI
+    CALL MPL_MESSAGE(LDABORT=.TRUE., &
+      & CDMESSAGE='File "'//TRIM(CL_TMPNAME)//'" write error at proc#'&
+      &//TRIM(ADJUSTL(CL_PROCID)), &
+      & CDSTRING='** Problems with UTIL_WRITERAW **')
+#endif
+  ENDIF
+
+  DEALLOCATE(FILE_CONTENTS)
+  LL_HAS_BEEN_COMMUNICATED = .TRUE.
+ENDIF
+
+9999 CONTINUE
+LDSTATUS = LL_HAS_BEEN_COMMUNICATED
+IF (LHOOK) CALL DR_HOOK('DISTIO_MIX:COMM_FILE',1,ZHOOK_HANDLE)
+END SUBROUTINE COMM_FILE
+
+SUBROUTINE REAL_COMM_ARRAY(I_UNIT, ARRAY,&
+           &CDFMT, IERR,&
+           &LL_DIRECT_ACCESS, LL_FORMATTED)
+
+INTEGER(KIND=JPIM), INTENT(IN) :: I_UNIT
+REAL(KIND=JPRB), INTENT(INOUT) :: ARRAY(:)
+LOGICAL, INTENT(IN), OPTIONAL ::LL_DIRECT_ACCESS, LL_FORMATTED
+CHARACTER(LEN=*), INTENT(IN) :: CDFMT
+INTEGER(KIND=JPIM), INTENT(OUT) :: IERR
+
+LOGICAL LL_FREE_FORMAT, LL_PBIO
+INTEGER(KIND=JPIM) :: I_SIZE
+
+REAL(KIND=JPRB) :: ZHOOK_HANDLE
+IF (LHOOK) CALL DR_HOOK('DISTIO_MIX:REAL_COMM_ARRAY',0,ZHOOK_HANDLE)
+LL_FREE_FORMAT = (CDFMT == '*')
+LL_PBIO        = (CDFMT == 'PBIO')
+I_SIZE = SIZE(ARRAY)
+
+IF (MYPROC == 1) THEN
+  IF (LL_PBIO) THEN
+    CALL PBREAD(I_UNIT, ARRAY, I_SIZE*JPREABYT, IERR)
+    IF (IERR == I_SIZE*JPREABYT) IERR = 0
+  ELSE
+    IF (LL_FORMATTED) THEN
+      IF (LL_DIRECT_ACCESS) THEN
+        READ(I_UNIT, FMT=CDFMT, IOSTAT=IERR, ERR=9999,REC=1) ARRAY
+      ELSE
+        IF (LL_FREE_FORMAT) THEN
+          READ(I_UNIT, FMT=*, IOSTAT=IERR, ERR=9999,END=9999) ARRAY
+        ELSE
+          READ(I_UNIT, FMT=CDFMT, IOSTAT=IERR, ERR=9999,END=9999) ARRAY
+        ENDIF
+      ENDIF
+    ELSE
+      IF (LL_DIRECT_ACCESS) THEN
+        READ(I_UNIT, IOSTAT=IERR, ERR=9999, REC=1) ARRAY
+      ELSE
+        READ(I_UNIT, IOSTAT=IERR, ERR=9999,END=9999) ARRAY
+      ENDIF
+    ENDIF
+  ENDIF
+ENDIF
+
+9999 CONTINUE
+
+IF (NPROC > 1) THEN
+
+!--   Broadcast the error code
+  IROOT = 1
+  ITAG  = 300
+  ICOMM = 0
+#ifdef SFX_MPI
+  CALL MPL_BROADCAST(IERR,KROOT=IROOT,KTAG=ITAG, &
+   & CDSTRING='REAL_COMM_ARRAY:')
+#endif
+  IF (IERR == 0) THEN
+!--   Broadcast the data itself if no errors
+    ILEN  = I_SIZE
+    IROOT = 1
+    ITAG  = 301
+    ICOMM = 0
+#ifdef SFX_MPI
+    CALL MPL_BROADCAST(ARRAY(1:ILEN),KROOT=IROOT,KTAG=ITAG, &
+     & CDSTRING='REAL_COMM_ARRAY:')
+#endif
+  ENDIF
+
+ENDIF
+
+IF (LHOOK) CALL DR_HOOK('DISTIO_MIX:REAL_COMM_ARRAY',1,ZHOOK_HANDLE)
+END SUBROUTINE REAL_COMM_ARRAY
+
+
+SUBROUTINE INT_COMM_ARRAY(I_UNIT, IARRAY,&
+           &CDFMT, IERR,&
+           &LL_DIRECT_ACCESS, LL_FORMATTED)
+
+INTEGER(KIND=JPIM), INTENT(IN) :: I_UNIT
+INTEGER(KIND=JPIM), INTENT(INOUT) :: IARRAY(:)
+LOGICAL, INTENT(IN), OPTIONAL :: LL_DIRECT_ACCESS, LL_FORMATTED
+CHARACTER(LEN=*), INTENT(IN) :: CDFMT
+INTEGER(KIND=JPIM), INTENT(OUT) :: IERR
+
+LOGICAL LL_FREE_FORMAT, LL_PBIO
+INTEGER(KIND=JPIM) :: I_SIZE
+
+REAL(KIND=JPRB) :: ZHOOK_HANDLE
+IF (LHOOK) CALL DR_HOOK('DISTIO_MIX:INT_COMM_ARRAY',0,ZHOOK_HANDLE)
+LL_FREE_FORMAT = (CDFMT == '*')
+LL_PBIO        = (CDFMT == 'PBIO')
+I_SIZE = SIZE(IARRAY)
+
+IF (MYPROC == 1) THEN
+  IF (LL_PBIO) THEN
+    CALL PBREAD(I_UNIT, IARRAY, I_SIZE*JPINTBYT, IERR)
+    IF (IERR == I_SIZE*JPINTBYT) IERR = 0
+  ELSE
+    IF (LL_FORMATTED) THEN
+      IF (LL_DIRECT_ACCESS) THEN
+        READ(I_UNIT, FMT=CDFMT, IOSTAT=IERR, ERR=9999,REC=1) IARRAY
+      ELSE
+        IF (LL_FREE_FORMAT) THEN
+          READ(I_UNIT, FMT=*, IOSTAT=IERR, ERR=9999,END=9999) IARRAY
+        ELSE
+          READ(I_UNIT, FMT=CDFMT, IOSTAT=IERR, ERR=9999,END=9999) IARRAY
+        ENDIF
+      ENDIF
+    ELSE
+      IF (LL_DIRECT_ACCESS) THEN
+        READ(I_UNIT, IOSTAT=IERR, ERR=9999, REC=1) IARRAY
+      ELSE
+        READ(I_UNIT, IOSTAT=IERR, ERR=9999,END=9999) IARRAY
+      ENDIF
+    ENDIF
+  ENDIF
+ENDIF
+
+9999 CONTINUE
+
+IF (NPROC > 1) THEN
+
+!--   Broadcast the error code
+  IROOT = 1
+  ITAG  = 400
+  ICOMM = 0
+#ifdef SFX_MPI
+  CALL MPL_BROADCAST(IERR,KROOT=IROOT,KTAG=ITAG,KERROR=IERR)
+#endif
+  IF (IERR == 0) THEN
+!--   Broadcast the data itself if no errors
+    ILEN  = I_SIZE
+    IROOT = 1
+    ITAG  = 401
+    ICOMM = 0
+#ifdef SFX_MPI
+    CALL MPL_BROADCAST(IARRAY(1:ILEN),KROOT=IROOT,KTAG=ITAG, &
+     & CDSTRING='INT_COMM_ARRAY:')
+#endif
+  ENDIF
+
+ENDIF
+
+IF (LHOOK) CALL DR_HOOK('DISTIO_MIX:INT_COMM_ARRAY',1,ZHOOK_HANDLE)
+END SUBROUTINE INT_COMM_ARRAY
+
+SUBROUTINE MRFSFILE(FILE_IN, FILE_OUT)
+
+!     A routine to prepend the "$MRFSDIR" in the front of the filename
+!     If $MRFSDIR is not defined, then return original filename w/o changes.
+
+!     Author: Sami Saarinen, ECMWF, 23/1/1998 for CY18R4
+
+
+
+
+
+CHARACTER(LEN=*), INTENT(IN)  :: FILE_IN
+CHARACTER(LEN=*), INTENT(OUT) :: FILE_OUT
+
+! === END OF INTERFACE BLOCK ===
+CHARACTER(LEN=255), SAVE :: MRFSDIR = ' '
+LOGICAL, SAVE :: ALREADY_CALLED = .FALSE.
+LOGICAL, SAVE :: HAS_MRFSDIR    = .FALSE.
+
+!--   Cache the $MRFSDIR to avoid any further calls to GET_MRFSDIR()
+REAL(KIND=JPRB) :: ZHOOK_HANDLE
+IF (LHOOK) CALL DR_HOOK('DISTIO_MIX:MRFSFILE',0,ZHOOK_HANDLE)
+IF (.NOT. ALREADY_CALLED) THEN
+  CALL GET_MRFSDIR(CDOUT = MRFSDIR)
+  HAS_MRFSDIR = (MRFSDIR /= ' ')
+  ALREADY_CALLED = .TRUE.
+ENDIF
+
+IF (HAS_MRFSDIR) THEN
+!--   Prepend "${MRFSDIR}/" and remove any leading/trailing blanks present
+  FILE_OUT = TRIM(ADJUSTL(MRFSDIR))//'/'//TRIM(ADJUSTL(FILE_IN))
+ELSE
+!--   No change
+  FILE_OUT = FILE_IN
+ENDIF
+
+IF (LHOOK) CALL DR_HOOK('DISTIO_MIX:MRFSFILE',1,ZHOOK_HANDLE)
+END SUBROUTINE MRFSFILE
+
+END MODULE DISTIO_MIX
+
+
+

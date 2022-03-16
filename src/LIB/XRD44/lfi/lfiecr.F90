@@ -1,0 +1,575 @@
+! Oct-2012 P. Marguinaud 64b LFI
+! Jan-2011 P. Marguinaud Thread-safe LFI
+
+SUBROUTINE LFIECR_FORT                                          &
+&                     (LFI, KREP, KNUMER, CDNOMA, KTAB, KLONG )
+USE LFIMOD, ONLY : LFICOM
+USE PARKIND1, ONLY : JPRB
+USE YOMHOOK , ONLY : LHOOK, DR_HOOK
+USE LFI_PRECISION
+IMPLICIT NONE
+!****
+!        SOUS-PROGRAMME D'ECRITURE D'UN ARTICLE (DE DONNEES) SUR UNE
+!     UNITE LOGIQUE OUVERTE POUR LE LOGICIEL DE FICHIERS INDEXES LFI;
+!     L'ARTICLE DOIT ETRE UN "BLOC" DE DONNEES ADJACENTES.
+!**
+!    ARGUMENTS : KREP   (SORTIE) ==> CODE-REPONSE DU SOUS-PROGRAMME;
+!                KNUMER (ENTREE) ==> LFI%NUMERO DE L'UNITE LOGIQUE;
+!                CDNOMA (ENTREE) ==> NOM DE L'ARTICLE A ECRIRE;
+!                KTAB   (ENTREE) ==> PREMIER MOT A ECRIRE
+!                KLONG  (ENTREE) ==> LONGUEUR DE L'ARTICLE A ECRIRE.
+!
+!
+TYPE(LFICOM) :: LFI
+CHARACTER CDNOMA*(*), CLNOMA*(LFI%JPNCPN)
+!
+INTEGER (KIND=JPLIKB) KREP, KNUMER, KLONG
+INTEGER (KIND=JPLIKB)  KTAB (KLONG)
+INTEGER (KIND=JPLIKB) IRANG, IREP, ILCLNO, IDECBL 
+INTEGER (KIND=JPLIKB) IPOSBL, INBALO, INBPIR
+INTEGER (KIND=JPLIKB) IFACTM, ILARPH, INALPP, IRPIEX 
+INTEGER (KIND=JPLIKB) IARTEX, ILONEX, IRPIEC
+INTEGER (KIND=JPLIKB) IARTEC, IPOSEC, IDTROU, ILONUT 
+INTEGER (KIND=JPLIKB) INPPIM, IRETIN, IRGPI, J
+INTEGER (KIND=JPLIKB) IRGPIM, ILFORC, INPILE, INAPHY 
+INTEGER (KIND=JPLIKB) IRANGM, INAPXX, INDMAX
+INTEGER (KIND=JPLIKB) IMDESC, INIMES, ILCDNO
+!
+LOGICAL LLLECT, LLECR, LLVERF
+!
+CHARACTER(LEN=LFI%JPLSPX) CLNSPR
+CHARACTER(LEN=LFI%JPLMES) CLMESS
+CHARACTER(LEN=LFI%JPLFTX) CLACTI
+LOGICAL LLFATA
+
+!**
+!     1.  -  CONTROLES DES PARAMETRES D'APPEL, PUIS INITIALISATIONS.
+!-----------------------------------------------------------------------
+!
+!        Appel legerement anticipe a LFINUM, garantissant l'initialisa-
+!     tion des variables globales du logiciel a la 1ere utilisation.
+!
+REAL(KIND=JPRB) :: ZHOOK_HANDLE
+IF (LHOOK) CALL DR_HOOK('LFIECR_FORT',0,ZHOOK_HANDLE)
+CLACTI=''
+CALL LFINUM_FORT                    &
+&               (LFI, KNUMER,IRANG)
+LLVERF=.FALSE.
+ILCDNO=INT (LEN (CDNOMA), JPLIKB)
+!
+IF (ILCDNO.LE.0) THEN
+  IREP=-15
+  CLNOMA=LFI%CHINCO(:LFI%JPNCPN)
+  ILCLNO=LFI%JPNCPN
+  GOTO 1001
+ELSEIF (CDNOMA.EQ.' ') THEN
+  IREP=-18
+  CLNOMA=' '
+  ILCLNO=1
+  GOTO 1001
+ENDIF
+!
+!        Recherche de la longueur "utile" du nom d'article specifie.
+!        (c'est-a-dire sans tenir compte des blancs terminaux eventuels)
+!
+IDECBL=0
+!
+101 CONTINUE
+IPOSBL=IDECBL+INT (INDEX (CDNOMA(IDECBL+1:),' '), JPLIKB)
+!
+IF (IPOSBL.LE.IDECBL) THEN
+  ILCLNO=ILCDNO
+ELSEIF (CDNOMA(IPOSBL:).EQ.' ') THEN
+  ILCLNO=IPOSBL-1
+ELSE
+  IDECBL=IPOSBL
+  GOTO 101
+ENDIF
+!
+IF (ILCLNO.LE.LFI%JPNCPN) THEN
+  CLNOMA=CDNOMA(:ILCLNO)
+ELSE
+  CLNOMA=CDNOMA(:LFI%JPNCPN)
+  ILCLNO=LFI%JPNCPN
+  IREP=-15
+  GOTO 1001
+ENDIF
+!
+IF (KLONG.LE.0) THEN
+  IREP=-14
+  GOTO 1001
+ELSEIF (IRANG.EQ.0) THEN
+  IREP=-1
+  GOTO 1001
+ENDIF
+!
+ IF (LFI%LMULTI) CALL LFIVER_FORT                              &
+&                                (LFI, LFI%VERRUE(IRANG),'ON')
+LLVERF=LFI%LMULTI
+!
+IF (LFI%NEXPOR(IRANG).GT.0) THEN
+!
+!         Fichier en cours d'export... ne devant donc pas etre modifie.
+!
+  IREP=-37
+  GOTO 1001
+ENDIF
+!
+LLLECT=.TRUE.
+LLECR =.FALSE.
+INBALO=LFI%MDES1D(IXM(LFI%JPNALO,IRANG))
+INBPIR=LFI%MDES1D(IXM(LFI%JPNPIR,IRANG))
+IFACTM=LFI%MFACTM(IRANG)
+ILARPH=LFI%JPLARD*IFACTM
+INALPP=LFI%JPNAPP*IFACTM
+!**
+!     2.  -  EXPLORATION DES (PAIRES DE) PAGES ET ARTICLES D'INDEX,
+!            A LA RECHERCHE DE L'ARTICLE LOGIQUE ET/OU D'UN "TROU"
+!            DANS L'INDEX, SUFFISANT POUR Y "CASER" LEDIT ARTICLE.
+!-----------------------------------------------------------------------
+!
+INAPHY=0
+CALL LFIREE_FORT                                               &
+&               (LFI, IREP,IRANG,CLNOMA(:ILCLNO),KLONG,IRPIEX, &
+&                IARTEX, ILONEX,IRPIEC,IARTEC,IPOSEC,          &
+&                IDTROU,ILONUT,IRETIN)
+!
+IF (IRETIN.EQ.1) THEN
+  GOTO 903
+ELSEIF (IRETIN.EQ.2) THEN
+  GOTO 904
+ELSEIF (IRETIN.NE.0) THEN
+  GOTO 1001
+ENDIF
+!
+INPPIM=LFI%NPPIMM(IRANG)
+!
+IF (IARTEX.NE.0.AND.LFI%NEXPOR(IRANG).GT.0) THEN
+!
+!         Fichier en cours d'export... la seule modification acceptee
+!         est l'ajout de nouveaux articles.
+!
+  IREP=-37
+  GOTO 1001
+ENDIF
+!**
+!     3.  -   PARTIE ECRITURE DES DONNEES .
+!-----------------------------------------------------------------------
+!
+CALL LFIECD_FORT                                           &
+&               (LFI, IREP,IRANG,KTAB,KLONG,IPOSEC,IRETIN)
+!
+IF (IRETIN.EQ.1) THEN
+  GOTO 903
+ELSEIF (IRETIN.EQ.2) THEN
+  GOTO 904
+ELSEIF (IRETIN.NE.0) THEN
+  GOTO 1001
+ENDIF
+!**
+!     4.  -   MODIFICATION(S) EVENTUELLE(S) DE L'INDEX.
+!-----------------------------------------------------------------------
+!
+IF (IARTEX.NE.0.AND.IARTEC.NE.IARTEX) THEN
+!*
+!     4.1 - CAS OU L'ON CREE UN TROU DANS L'INDEX.
+!-----------------------------------------------------------------------
+!
+!           RECHERCHE OU MISE EN MEMOIRE DE L'ARTICLE D'INDEX "NOMS"
+!        CONTENANT LES CARACTERISTIQUES DE L'ARTICLE LOGIQUE
+!        QUE L'ON "TROUE".
+!
+  DO J=1,INPPIM
+  IRGPI=LFI%MRGPIM(J,IRANG)
+!
+  IF (LFI%MRGPIF(IRGPI).EQ.IRPIEX) THEN
+    IRGPIM=IRGPI
+    GOTO 413
+  ENDIF
+!
+  ENDDO
+!
+  ILFORC=1
+  INPILE=1
+  INAPHY=0
+  CALL LFIPIM_FORT                                       &
+&                 (LFI, IREP,IRANG,IRANGM,IRGPIM,IRPIEX, &
+&                  ILFORC,INPILE, IRETIN)
+!
+  IF (IRETIN.EQ.1) THEN
+    GOTO 903
+  ELSEIF (IRETIN.EQ.2) THEN
+    GOTO 904
+  ELSEIF (IRETIN.NE.0) THEN
+    GOTO 1001
+  ENDIF
+!
+  INPPIM=MAX (INPPIM,IRANGM)
+!
+413 CONTINUE
+  LFI%CNOMAR(IXC(IARTEX,IRGPIM))=' '
+  LFI%LECRPI(IRGPIM,1)=.TRUE.
+!
+  IF (ILONEX.NE.ILONUT) THEN
+!
+!           STOCKAGE DE LA LONGUEUR TOTALE UTILISABLE DU TROU .
+!         DANS CE CAS, ON EST SUR QUE LA PAGE D'INDEX "LONG./POS."
+!         EST TOUJOURS PHASEE.
+!
+    LFI%MLGPOS(IXM(2*IARTEX-1,IRGPIM))=ILONUT
+    LFI%LECRPI(IRGPIM,2)=.TRUE.
+  ENDIF
+!
+ENDIF
+!
+IF (INALPP*(IRPIEC-1)+IARTEC.GT.INBALO) THEN
+!*
+!     4.2 - CAS OU L'ON A CREE UN ARTICLE LOGIQUE SUPPLEMENTAIRE.
+!-----------------------------------------------------------------------
+!
+  LFI%MDES1D(IXM(LFI%JPNALO,IRANG))=INBALO+1
+!
+  IF (INBALO.NE.0.AND.IARTEC.EQ.1) THEN
+!
+!             ON DOIT CREER UNE P.A.I. SUPPLEMENTAIRE.
+!
+    IF (IRPIEC.GT.INBPIR) THEN
+!
+!             CETTE NOUVELLE P.A.I. EST "EXCEDENTAIRE".
+!             RECHERCHE DU PREMIER ARTICLE PHYSIQUE DISPONIBLE
+!             POUR Y ECRIRE (ULTERIEUREMENT) CETTE P.A.I. EXCEDENTAIRE.
+!             LE CONTROLE DE DEPASSEMENT DE CAPACITE DE L'INDEX
+!             DU FICHIER A ETE FAIT DANS LE SOUS-PROGRAMME *LFIREE*.
+!
+      INAPXX=LFI%MDES1D(IXM(LFI%JPAXPD,IRANG))
+      INDMAX=LFI%JPNIL
+!
+      DO J=0,LFI%JPNPDF-1
+!
+      IF (LFI%NUMAPD(J,IRANG).GT.INAPXX) THEN
+        INAPXX=LFI%NUMAPD(J,IRANG)
+        INDMAX=J
+      ENDIF
+!
+      ENDDO
+!
+      IF (IRPIEC.GT.(INBPIR+1)) THEN
+        IMDESC=LFI%MDES1D(IXM(ILARPH+2-IRPIEC+INBPIR,IRANG))
+        INAPXX=MAX (INAPXX,IMDESC+1)
+      ENDIF
+!
+      LFI%MDES1D(IXM(ILARPH+1-IRPIEC+INBPIR,IRANG))=INAPXX+1
+!
+!      L'ON A AUSSI CREE, EN GENERAL, UNE ZONE "PERDUE" (MAIS NEANMOINS
+!     REUTILISABLE DANS UNE CERTAINE MESURE) A LA FIN DU DERNIER
+!     ARTICLE PHYSIQUE DES DONNEES QUE L'ON VIENT D'ECRIRE.
+!           IL EST ALORS NECESSAIRE DE "COMPLETER" LA ZONE PERDUE,
+!     POUR NE PAS AVOIR DE PROBLEME ULTERIEUR DANS *LFIECX*.
+!
+      IF (INDMAX.NE.LFI%JPNIL) THEN
+!
+        DO J=LFI%NLONPD(INDMAX,IRANG)+1,ILARPH
+        LFI%MTAMPD(IXT(J,INDMAX,IRANG))=0
+        ENDDO
+!
+        LFI%NLONPD(INDMAX,IRANG)=ILARPH
+      ENDIF
+!
+    ENDIF
+!
+    ILFORC=1
+    INPILE=0
+    INAPHY=0
+    CALL LFIPIM_FORT                                       &
+&                   (LFI, IREP,IRANG,IRANGM,IRGPIM,IRPIEC, &
+&                    ILFORC,INPILE, IRETIN)
+!
+    IF (IRETIN.EQ.1) THEN
+      GOTO 903
+    ELSEIF (IRETIN.EQ.2) THEN
+      GOTO 904
+    ELSEIF (IRETIN.NE.0) THEN
+      GOTO 1001
+    ENDIF
+!
+    LFI%NPODPI(IRANG)=IRANGM
+!
+!           REMARQUE: LA DERNIERE P.P.I. EST TOUJOURS "PHASEE".
+!
+    LFI%LPHASP(IRGPIM)=.TRUE.
+  ELSE
+    IRGPIM=LFI%MRGPIM(LFI%NPODPI(IRANG),IRANG)
+  ENDIF
+!
+  LFI%NALDPI(IRANG)=IARTEC
+  LFI%CNOMAR(IXC(IARTEC,IRGPIM))=CLNOMA(:ILCLNO)
+  LFI%MLGPOS(IXM(2*IARTEC-1,IRGPIM))=KLONG
+  LFI%MLGPOS(IXM(2*IARTEC  ,IRGPIM))=IPOSEC
+  LFI%LECRPI(IRGPIM,1)=.TRUE.
+  LFI%LECRPI(IRGPIM,2)=.TRUE.
+!
+ELSEIF (IARTEX.EQ.0.OR.KLONG.NE.ILONEX) THEN
+!*
+!     4.3 - CAS OU L'ON REUTILISE UN ARTICLE OU TROU QUI EXISTAIT
+!           AU PREALABLE, EN MODIFIANT SES CARACTERISTIQUES DE NOM ET/OU
+!           DE LONGUEUR.
+!-----------------------------------------------------------------------
+!
+  DO J=1,INPPIM
+  IRGPI=LFI%MRGPIM(J,IRANG)
+!
+  IF (LFI%MRGPIF(IRGPI).EQ.IRPIEC) THEN
+    IRANGM=J
+    IRGPIM=IRGPI
+!
+!           L'ARTICLE D'INDEX "NOMS" CORRESPONDANT EST EN MEMOIRE...
+!       PHASAGE EVENTUEL DE LA PAGE D'INDEX "LONG/POS" .
+!
+    INAPHY=0
+!
+    IF (.NOT.LFI%LPHASP(IRGPIM)) THEN
+!
+      CALL LFIPHA_FORT                                &
+&                     (LFI, IREP,IRANG,IRGPIM,IRETIN)
+!
+      IF (IRETIN.EQ.1) THEN
+        GOTO 903
+      ELSEIF (IRETIN.EQ.2) THEN
+        GOTO 904
+      ELSEIF (IRETIN.NE.0) THEN
+        GOTO 1001
+      ENDIF
+!
+    ENDIF
+!
+    GOTO 434
+  ENDIF
+!
+  ENDDO
+!
+!            ARTICLE D'INDEX CORRESPONDANT NON PRESENT EN MEMOIRE...
+!         ON L'Y AMENE.
+!
+  ILFORC=1
+  INPILE=2
+  INAPHY=0
+  CALL LFIPIM_FORT                                       &
+&                 (LFI, IREP,IRANG,IRANGM,IRGPIM,IRPIEC, &
+&                  ILFORC,INPILE, IRETIN)
+!
+  IF (IRETIN.EQ.1) THEN
+    GOTO 903
+  ELSEIF (IRETIN.EQ.2) THEN
+    GOTO 904
+  ELSEIF (IRETIN.NE.0) THEN
+    GOTO 1001
+  ENDIF
+!
+434 CONTINUE
+!
+  IF (IARTEC.NE.IARTEX.OR.IRPIEC.NE.IRPIEX) THEN
+    LFI%CNOMAR(IXC(IARTEC,IRGPIM))=CLNOMA(:ILCLNO)
+    LFI%LECRPI(IRGPIM,1)=.TRUE.
+  ENDIF
+!
+  LFI%MLGPOS(IXM(2*IARTEC-1,IRGPIM))=KLONG
+  LFI%LECRPI(IRGPIM,2)=.TRUE.
+!
+ENDIF
+!**
+!     5.  -   MISE A JOUR: STATISTIQUES, TABLES, PAGE DOCUMENTAIRE.
+!-----------------------------------------------------------------------
+!
+IF (IARTEX.EQ.0) THEN
+  LFI%NBNECR(IRANG)=LFI%NBNECR(IRANG)+1
+ELSEIF (KLONG.EQ.ILONEX) THEN
+  LFI%NREESP(IRANG)=LFI%NREESP(IRANG)+1
+ELSEIF (KLONG.LT.ILONEX) THEN
+  LFI%NREECO(IRANG)=LFI%NREECO(IRANG)+1
+  LFI%LMIMAL(IRANG)=LFI%LMIMAL(IRANG).OR.                   &
+&                ILONEX.EQ.LFI%MDES1D(IXM(LFI%JPLXAL,IRANG))
+ELSE
+  LFI%NREELO(IRANG)=LFI%NREELO(IRANG)+1
+  LFI%LMIMAL(IRANG)=LFI%LMIMAL(IRANG).OR.                   &
+&                ILONEX.EQ.LFI%MDES1D(IXM(LFI%JPLNAL,IRANG))
+ENDIF
+!
+LFI%NBTROU(IRANG)=LFI%NBTROU(IRANG)+IDTROU
+IF (LFI%LMISOP) WRITE (UNIT=LFI%NULOUT,FMT=*)                      &
+&        'IDTROU = ',IDTROU,', ILONEX = ',ILONEX,', KLONG = ',KLONG
+!
+!        On met a jour ce qui a trait aux acces pseudo-sequentiels...
+!
+LFI%NDERGF(IRANG)=INALPP*(IRPIEC-1)+IARTEC
+LFI%CNDERA(IRANG)=CLNOMA(:ILCLNO)
+LFI%NSUIVF(IRANG)=LFI%JPNIL
+LFI%NPRECF(IRANG)=LFI%JPNIL
+!
+IMDESC=LFI%MDES1D(IXM(LFI%JPLNAL,IRANG))
+LFI%MDES1D(IXM(LFI%JPLNAL,IRANG))=MIN (IMDESC,KLONG)
+IMDESC=LFI%MDES1D(IXM(LFI%JPLXAL,IRANG))
+LFI%MDES1D(IXM(LFI%JPLXAL,IRANG))=MAX (IMDESC,KLONG)
+LFI%MDES1D(IXM(LFI%JPLTAL,IRANG))=                          &
+&             LFI%MDES1D(IXM(LFI%JPLTAL,IRANG))+KLONG-ILONEX
+IF (INBALO.EQ.0) LFI%MDES1D(IXM(LFI%JPLNAL,IRANG))=KLONG
+!
+IF (.NOT.LFI%LMODIF(IRANG)) THEN
+!
+!         CAS DE LA PREMIERE ECRITURE DEPUIS L'OUVERTURE DU FICHIER.
+!
+  LFI%LMODIF(IRANG)=.TRUE.
+  INAPHY=0
+  CALL LFIMOE_FORT                         &
+&                 (LFI, IREP,IRANG,IRETIN)
+!
+  IF (IRETIN.EQ.1) THEN
+    GOTO 903
+  ELSEIF (IRETIN.EQ.2) THEN
+    GOTO 904
+  ELSEIF (IRETIN.NE.0) THEN
+    GOTO 1001
+  ENDIF
+!
+ENDIF
+!
+IREP=0
+LFI%NBMOEC(IRANG)=LFI%NBMOEC(IRANG)+KLONG
+GOTO 1001
+!**
+!     9.  - CI-DESSOUS, ETIQUETTES DE BRANCHEMENT EN CAS D'ERREUR E/S.
+!-----------------------------------------------------------------------
+!
+903 CONTINUE
+CLACTI='WRITE'
+GOTO 909
+!
+904 CONTINUE
+CLACTI='READ'
+!
+909 CONTINUE
+!
+!      AU CAS OU, ON FORCE LE CODE-REPONSE ENTREE/SORTIE A ETRE POSITIF.
+!
+IREP=ABS (IREP)
+IF (INAPHY.NE.0) LFI%NUMAPH(IRANG)=INAPHY
+!**
+!    10.  -  PHASE TERMINALE : MESSAGERIE, AVEC "ABORT" EVENTUEL,
+!            VIA LE SOUS-PROGRAMME "LFIEMS" .
+!-----------------------------------------------------------------------
+!
+1001 CONTINUE
+KREP=IREP
+LLFATA=LLMOER (IREP,IRANG)
+!
+IF (IRANG.NE.0) THEN
+  LFI%NDEROP(IRANG)=1
+  LFI%NDERCO(IRANG)=IREP
+   IF (LLVERF) CALL LFIVER_FORT                               &
+&                              (LFI, LFI%VERRUE(IRANG),'OFF')
+ENDIF
+!
+IF (LLFATA.OR.IXNIMS (IRANG).EQ.2) THEN
+  INIMES=2
+ELSE
+  IF (LHOOK) CALL DR_HOOK('LFIECR_FORT',1,ZHOOK_HANDLE)
+  RETURN
+ENDIF
+!
+CLNSPR='LFIECR'
+WRITE (UNIT=CLMESS,FMT='(''KREP='',I4,'', KNUMER='',I3, &
+&       '', CDNOMA='''''',A,'''''', KLONG='',I7)')       &
+&     KREP,KNUMER,CLNOMA(:ILCLNO),KLONG
+CALL LFIEMS_FORT                                 &
+&               (LFI, KNUMER,INIMES,IREP,LLFATA, &
+&                CLMESS,CLNSPR,CLACTI)
+!
+IF (LHOOK) CALL DR_HOOK('LFIECR_FORT',1,ZHOOK_HANDLE)
+
+CONTAINS
+
+#include "lficom2.ixc.h"
+#include "lficom2.ixm.h"
+#include "lficom2.ixnims.h"
+#include "lficom2.ixt.h"
+#include "lficom2.llmoer.h"
+
+END SUBROUTINE LFIECR_FORT
+
+
+
+! Oct-2012 P. Marguinaud 64b LFI
+SUBROUTINE LFIECR64                           &
+&           (KREP, KNUMER, CDNOMA, KTAB, KLONG)
+USE LFIMOD, ONLY : LFI => LFICOM_DEFAULT, &
+&                   LFICOM_DEFAULT_INIT,   &
+&                   NEW_LFI_DEFAULT
+USE LFI_PRECISION
+IMPLICIT NONE
+! Arguments
+INTEGER (KIND=JPLIKB)  KREP                                   !   OUT
+INTEGER (KIND=JPLIKB)  KNUMER                                 ! IN   
+CHARACTER (LEN=*)      CDNOMA                                 ! IN   
+INTEGER (KIND=JPLIKB)  KLONG                                  ! IN   
+INTEGER (KIND=JPLIKB)  KTAB       (KLONG)                     ! IN   
+
+IF (.NOT. LFICOM_DEFAULT_INIT) CALL NEW_LFI_DEFAULT ()
+
+CALL LFIECR_FORT                                    &
+&           (LFI, KREP, KNUMER, CDNOMA, KTAB, KLONG)
+
+END SUBROUTINE LFIECR64
+
+SUBROUTINE LFIECR                             &
+&           (KREP, KNUMER, CDNOMA, KTAB, KLONG)
+USE LFIMOD, ONLY : LFI => LFICOM_DEFAULT, &
+&                   LFICOM_DEFAULT_INIT,   &
+&                   NEW_LFI_DEFAULT
+USE LFI_PRECISION
+IMPLICIT NONE
+! Arguments
+INTEGER (KIND=JPLIKM)  KREP                                   !   OUT
+INTEGER (KIND=JPLIKM)  KNUMER                                 ! IN   
+CHARACTER (LEN=*)      CDNOMA                                 ! IN   
+INTEGER (KIND=JPLIKM)  KLONG                                  ! IN   
+INTEGER (KIND=JPLIKB)  KTAB       (KLONG)                     ! IN   
+
+IF (.NOT. LFICOM_DEFAULT_INIT) CALL NEW_LFI_DEFAULT ()
+
+CALL LFIECR_MT                                     &
+&           (LFI, KREP, KNUMER, CDNOMA, KTAB, KLONG)
+
+END SUBROUTINE LFIECR
+
+SUBROUTINE LFIECR_MT                               &
+&           (LFI, KREP, KNUMER, CDNOMA, KTAB, KLONG)
+USE LFIMOD, ONLY : LFICOM
+USE LFI_PRECISION
+IMPLICIT NONE
+! Arguments
+TYPE (LFICOM)          LFI                                    ! INOUT
+INTEGER (KIND=JPLIKM)  KREP                                   !   OUT
+INTEGER (KIND=JPLIKM)  KNUMER                                 ! IN   
+CHARACTER (LEN=*)      CDNOMA                                 ! IN   
+INTEGER (KIND=JPLIKM)  KLONG                                  ! IN   
+INTEGER (KIND=JPLIKB)  KTAB       (KLONG)                     ! IN   
+! Local integers
+INTEGER (KIND=JPLIKB)  IREP                                   !   OUT
+INTEGER (KIND=JPLIKB)  INUMER                                 ! IN   
+INTEGER (KIND=JPLIKB)  ILONG                                  ! IN   
+! Convert arguments
+
+INUMER     = INT (    KNUMER, JPLIKB)
+ILONG      = INT (     KLONG, JPLIKB)
+
+CALL LFIECR_FORT                                    &
+&           (LFI, IREP, INUMER, CDNOMA, KTAB, ILONG)
+
+KREP       = INT (      IREP, JPLIKM)
+
+END SUBROUTINE LFIECR_MT
+
+!INTF KREP            OUT                                                              
+!INTF KNUMER        IN                                                                 
+!INTF CDNOMA        IN                                                                 
+!INTF KTAB          IN    DIMS=KLONG                     KIND=JPLIKB                   
+!INTF KLONG         IN                                                                 

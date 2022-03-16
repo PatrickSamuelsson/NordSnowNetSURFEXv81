@@ -1,0 +1,145 @@
+! Oct-2012 P. Marguinaud 64b LFI
+! Jan-2011 P. Marguinaud Thread-safe LFI
+
+SUBROUTINE LFINUM_FORT                      &
+&                     (LFI, KNUMER, KRANG )
+USE LFIMOD, ONLY : LFICOM
+USE PARKIND1, ONLY : JPRB
+USE YOMHOOK , ONLY : LHOOK, DR_HOOK
+USE LFI_PRECISION
+IMPLICIT NONE
+!****
+!        CE SOUS-PROGRAMME CALCULE LE RANG DU LFI%NUMERO D'UNITE LOGIQUE
+!     *KNUMER* DANS LA TABLE DES UNITES LOGIQUES *LFI%NUMERO*;
+!     S'IL N'Y EST PAS TROUVE, LE RESULTAT EST ZERO.
+!        CE SOUS-PROGRAMME, APPELE PAR *TOUS* LES SOUS-PROGRAMMES NON
+!     GLOBAUX DU LOGICIEL DE FICHIERS INDEXES LFI, SE CHARGE LORS DE SON
+!     PREMIER APPEL D'APPELER LE SOUS-PROGRAMME PREPARATOIRE LFIINI.
+!**
+!       ARGUMENTS : KNUMER (ENTREE) ==> LFI%NUMERO D'UNITE LOGIQUE CHERCHE;
+!                   KRANG  (SORTIE) ==> RANG DANS LA TABLE DES FICHIERS
+!                                       DU LOGICIEL LFI (0 SI ABSENT).
+!
+!
+TYPE(LFICOM) :: LFI
+INTEGER (KIND=JPLIKB) KNUMER, KRANG, J, IRESUL, IREP, INIMES
+CHARACTER(LEN=LFI%JPLSPX) CLNSPR
+CHARACTER(LEN=LFI%JPLMES) CLMESS
+CHARACTER(LEN=LFI%JPLFTX) CLACTI
+
+!
+REAL(KIND=JPRB) :: ZHOOK_HANDLE
+IF (LHOOK) CALL DR_HOOK('LFINUM_FORT',0,ZHOOK_HANDLE)
+CLACTI=''
+IF (LFI%LFINUM_LLPREA) THEN
+  CALL LFIINI_FORT                 &
+&                 (LFI, 2_JPLIKB )
+  LFI%LFINUM_LLPREA=.FALSE.
+ENDIF
+!
+!          VERROUILLAGE GLOBAL (A CAUSE DE L'UTILISATION DE LFI%NBFIOU )
+!
+ IF (LFI%LMULTI) CALL LFIVER_FORT                       &
+&                                (LFI, LFI%VERGLA,'ON')
+!
+DO J=1,LFI%NBFIOU
+!
+IF (KNUMER.EQ.LFI%NUMERO(LFI%NUMIND(J))) THEN
+  IRESUL=LFI%NUMIND(J)
+  GOTO 20
+ENDIF
+!
+ENDDO
+!
+IRESUL=0
+!
+20 CONTINUE
+!
+!          DEVERROUILLAGE GLOBAL
+!
+ IF (LFI%LMULTI) CALL LFIVER_FORT                        &
+&                                (LFI, LFI%VERGLA,'OFF')
+KRANG=IRESUL
+!**
+!    10.  -  PHASE TERMINALE : MESSAGERIE INTERNE EVENTUELLE,
+!            VIA LE SOUS-PROGRAMME "LFIEMS", PUIS RETOUR.
+!-----------------------------------------------------------------------
+!
+IF (LFI%LMISOP) THEN
+  IREP=0
+  INIMES=2
+  CLNSPR='LFINUM'
+  WRITE (UNIT=CLMESS,FMT='(''KNUMER='',I3,'', KRANG='',I3)') &
+&    KNUMER,KRANG
+  CALL LFIEMS_FORT                                  &
+&                 (LFI, KNUMER,INIMES,IREP,.FALSE., &
+&                  CLMESS,CLNSPR,CLACTI)
+ENDIF
+!
+IF (LHOOK) CALL DR_HOOK('LFINUM_FORT',1,ZHOOK_HANDLE)
+END SUBROUTINE LFINUM_FORT
+
+
+
+! Oct-2012 P. Marguinaud 64b LFI
+SUBROUTINE LFINUM64           &
+&           (KNUMER, KRANG)
+USE LFIMOD, ONLY : LFI => LFICOM_DEFAULT, &
+&                   LFICOM_DEFAULT_INIT,   &
+&                   NEW_LFI_DEFAULT
+USE LFI_PRECISION
+IMPLICIT NONE
+! Arguments
+INTEGER (KIND=JPLIKB)  KNUMER                                 ! IN   
+INTEGER (KIND=JPLIKB)  KRANG                                  !   OUT
+
+IF (.NOT. LFICOM_DEFAULT_INIT) CALL NEW_LFI_DEFAULT ()
+
+CALL LFINUM_FORT                &
+&           (LFI, KNUMER, KRANG)
+
+END SUBROUTINE LFINUM64
+
+SUBROUTINE LFINUM             &
+&           (KNUMER, KRANG)
+USE LFIMOD, ONLY : LFI => LFICOM_DEFAULT, &
+&                   LFICOM_DEFAULT_INIT,   &
+&                   NEW_LFI_DEFAULT
+USE LFI_PRECISION
+IMPLICIT NONE
+! Arguments
+INTEGER (KIND=JPLIKM)  KNUMER                                 ! IN   
+INTEGER (KIND=JPLIKM)  KRANG                                  !   OUT
+
+IF (.NOT. LFICOM_DEFAULT_INIT) CALL NEW_LFI_DEFAULT ()
+
+CALL LFINUM_MT                 &
+&           (LFI, KNUMER, KRANG)
+
+END SUBROUTINE LFINUM
+
+SUBROUTINE LFINUM_MT             &
+&           (LFI, KNUMER, KRANG)
+USE LFIMOD, ONLY : LFICOM
+USE LFI_PRECISION
+IMPLICIT NONE
+! Arguments
+TYPE (LFICOM)          LFI                                    ! INOUT
+INTEGER (KIND=JPLIKM)  KNUMER                                 ! IN   
+INTEGER (KIND=JPLIKM)  KRANG                                  !   OUT
+! Local integers
+INTEGER (KIND=JPLIKB)  INUMER                                 ! IN   
+INTEGER (KIND=JPLIKB)  IRANG                                  !   OUT
+! Convert arguments
+
+INUMER     = INT (    KNUMER, JPLIKB)
+
+CALL LFINUM_FORT                &
+&           (LFI, INUMER, IRANG)
+
+KRANG      = INT (     IRANG, JPLIKM)
+
+END SUBROUTINE LFINUM_MT
+
+!INTF KNUMER        IN    
+!INTF KRANG           OUT 

@@ -1,0 +1,499 @@
+! Oct-2012 P. Marguinaud 64b LFI
+! Jan-2011 P. Marguinaud Thread-safe LFI
+SUBROUTINE LFIECX_FORT                                 &
+&                     (LFI, KREP, KRANG, KREC, KZONE,  &
+&                      LDADON, KRETIN )
+USE LFIMOD, ONLY : LFICOM
+USE PARKIND1, ONLY : JPRB
+USE YOMHOOK , ONLY : LHOOK, DR_HOOK
+USE LFI_PRECISION
+IMPLICIT NONE
+!****
+!        SOUS-PROGRAMME *INTERNE* DU LOGICIEL DE FICHIERS INDEXES LFI
+!     ECRITURE SUR FICHIER D'UNE PAGE DE DONNEES OU D'INDEX LONG./POS.,
+!     EN "BOUCHANT LES TROUS" SI ON N'ECRIT PAS A LA SUITE DU DERNIER
+!     ARTICLE PRESENT SUR LE FICHIER, ET EN ESSAYANT D'ECRIRE DES ARTI-
+!     CLES ADJACENTS SI ON N'ECRIT PAS UN ARTICLE (PHYSIQUE) "NOUVEAU".
+!        CE S/P MET A JOUR LE NOMBRE D'ARTICLES PHYSIQUES DU FICHIER,
+!     ET DANS LE CAS D'UN ARTICLE PHYSIQUE DE DONNEES, LE LFI%NUMERO MAXI.
+!     D'ARTICLE PHYSIQUE DE DONNEES DU FICHIER.
+!**
+!    ARGUMENTS : KREP   (SORTIE) ==> CODE-REPONSE DE L'ECRITURE FORTRAN;
+!                KRANG  (ENTREE) ==> RANG EN MEMOIRE DE L'UNITE LOGIQUE;
+!                KREC   (ENTREE) ==> LFI%NUMERO D'ENREGISTREMENT A ECRIRE;
+!                KZONE  (ENTREE) ==> PREMIER MOT A ECRIRE;
+!                LDADON (ENTREE) ==> VRAI SI ARTICLE DE DONNEES;
+!                KRETIN (SORTIE) ==> CODE-RETOUR INTERNE.
+!
+!
+TYPE(LFICOM) :: LFI
+INTEGER (KIND=JPLIKB) KZONE (LFI%JPLARX)
+INTEGER (KIND=JPLIKB) KREP, KRANG, KREC, KRETIN
+INTEGER (KIND=JPLIKB) INADJA (2), IPOSAD (LFI%JPNPDF) 
+INTEGER (KIND=JPLIKB) IMDESC, INUMER, INPPIM, JREC
+INTEGER (KIND=JPLIKB) IPODPI, IFACTM, ILARPH, INALPP 
+INTEGER (KIND=JPLIKB) INBPIR, INDIK1, INDIK2, J
+INTEGER (KIND=JPLIKB) INDIC1, INDIC2, INUMPD, INAPHY 
+INTEGER (KIND=JPLIKB) IJ, IRGPIM, IRGPIF, IDEBSE
+INTEGER (KIND=JPLIKB) INDIS1, INDIS2, JSENS, ISENS 
+INTEGER (KIND=JPLIKB) IREC, INUMAP, IRECX, INIMES
+INTEGER (KIND=JPLIKB) IRETOU, IRETIN
+!
+LOGICAL LDADON, LLSAUT, LLFILT, LLLOIN
+!
+CHARACTER(LEN=LFI%JPLSPX) CLNSPR
+CHARACTER(LEN=LFI%JPLMES) CLMESS
+CHARACTER(LEN=LFI%JPLFTX) CLACTI
+LOGICAL LLFATA
+
+!**
+!     1.  -  CONTROLES ET INITIALISATIONS.
+!-----------------------------------------------------------------------
+!
+REAL(KIND=JPRB) :: ZHOOK_HANDLE
+IF (LHOOK) CALL DR_HOOK('LFIECX_FORT',0,ZHOOK_HANDLE)
+CLACTI=''
+IF (KRANG.LE.0.OR.KRANG.GT.LFI%JPNXFI) THEN
+  INUMER=LFI%JPNIL
+ELSE
+  INUMER=LFI%NUMERO(KRANG)
+ENDIF
+!
+IRETOU=0
+!
+IF (INUMER.EQ.LFI%JPNIL) THEN
+  KREP=-14
+  GOTO 1001
+ENDIF
+!
+INAPHY=0
+LLSAUT=.FALSE.
+INPPIM=LFI%NPPIMM(KRANG)
+IPODPI=LFI%NPODPI(KRANG)
+IFACTM=LFI%MFACTM(KRANG)
+ILARPH=LFI%JPLARD*IFACTM
+INALPP=LFI%JPNAPP*IFACTM
+INBPIR=LFI%MDES1D(IXM(LFI%JPNPIR,KRANG))
+LLLOIN=KREC.GT.LFI%MDES1D(IXM(LFI%JPNAPH,KRANG))
+!
+IF (LLLOIN) THEN
+!**
+!     2.  -  CAS OU L'ON ECRIT PLUS LOIN QUE LE DERNIER ARTICLE
+!            EFFECTIVEMENT ECRIT SUR LE FICHIER.
+!-----------------------------------------------------------------------
+!
+  INDIK1=1
+  INDIK2=LFI%JPNPDF
+!*
+!     2.1 -  ECRITURE D'EVENTUELS ARTICLES ENTRE LE DERNIER PRESENT
+!            SUR LE FICHIER, ET CELUI QUE L'ON DOIT ECRIRE.
+!-----------------------------------------------------------------------
+!
+  DO JREC=LFI%MDES1D(IXM(LFI%JPNAPH,KRANG))+1,KREC-1
+!
+  IF (LLSAUT) THEN
+    LLSAUT=.FALSE.
+    GOTO 213
+  ENDIF
+!
+  INDIC1=INDIK1
+  INDIC2=INDIK2
+!
+  DO J=INDIC1,INDIC2
+  INUMPD=MOD (LFI%NDERPD(KRANG)+J,LFI%JPNPDF)
+!
+  IF (LFI%NUMAPD(INUMPD,KRANG).EQ.JREC) THEN
+    IF (J.EQ.INDIK1) INDIK1=INDIK1+1
+    IF (J.EQ.INDIK2) INDIK2=INDIK2-1
+    IF (LFI%LMISOP) WRITE (UNIT=LFI%NULOUT,FMT=*)         &
+&          '$$$ LFIECX - INUMPD= ',INUMPD,                 &
+&          ', INDIK1= ', INDIK1,', INDIK2= ',INDIK2,' $$$'
+!
+!          ARTICLE PHYSIQUE TROUVE DANS LES PAGES DE DONNEES;
+!       IL S'AGIT DONC D'UNE PAGE DE DONNEES NON ENCORE ECRITE,
+!       ET FORCEMENT COMPLETE DANS CE CAS.
+!
+    IF (.NOT.LFI%LECRPD(INUMPD,KRANG)                &
+&        .OR.LFI%NLONPD(INUMPD,KRANG).NE.ILARPH) THEN
+      KREP=-16
+      GOTO 1001
+    ENDIF
+!
+    INAPHY=JREC
+    CALL LFIEDO_FORT                                            &
+&                   (LFI, KREP,INUMER,JREC,                   &
+&                    LFI%MTAMPD(IXT(1_JPLIKB ,INUMPD,KRANG)), &
+&                    LFI%NBWRIT(KRANG),IFACTM,                &
+&                    LFI%YLFIC (KRANG), IRETIN)
+
+!
+    IF (IRETIN.EQ.1) THEN
+      GOTO 903
+    ELSEIF (IRETIN.NE.0) THEN
+      GOTO 1001
+    ENDIF
+!
+    LFI%LECRPD(INUMPD,KRANG)=.FALSE.
+    GOTO 213
+  ELSEIF (LFI%NUMAPD(INUMPD,KRANG).LT.JREC) THEN
+    IF (J.EQ.INDIK1) INDIK1=INDIK1+1
+    IF (J.EQ.INDIK2) INDIK2=INDIK2-1
+  ENDIF
+!
+  ENDDO
+!
+!        CAS OU L'ARTICLE N'A PAS ETE TROUVE DANS LES PAGES DE DONNEES;
+!        IL S'AGIT DONC D'UN ARTICLE D'INDEX "EXCEDENTAIRE", NON ENCORE
+!        ECRIT, ET EN FAIT IL Y A DEUX ARTICLES CONSECUTIFS A ECRIRE.
+!
+  DO J=1,INPPIM
+!
+!       ON COMMENCE EN FAIT LA RECHERCHE PAR LA DERNIERE P.P.I., CAR IL
+!       Y A PRATIQUEMENT TOUTES LES CHANCES QUE CE SOIT CELLE CHERCHEE.
+!       ( LA PREMIERE EST, PAR CONSTRUCTION, NON EXCEDENTAIRE )
+!
+  IF (J.EQ.1) THEN
+    IJ=IPODPI
+  ELSEIF (J.EQ.IPODPI) THEN
+    CYCLE
+  ELSE
+    IJ=J
+  ENDIF
+!
+  IRGPIM=LFI%MRGPIM(IJ,KRANG)
+  IRGPIF=LFI%MRGPIF(IRGPIM)
+  IF (IRGPIF.LE.INBPIR) CYCLE
+  CALL LFIREC_FORT                         &
+&                 (LFI, IRGPIF,KRANG,IREC)
+!
+  IF (IREC.EQ.JREC) THEN
+!
+    IF (.NOT.LFI%LECRPI(IRGPIM,1).OR.   &
+&        .NOT.LFI%LECRPI(IRGPIM,2)) THEN
+      KREP=-16
+      GOTO 1001
+    ENDIF
+!
+    INAPHY=JREC
+    CALL LFIECC_FORT                                      &
+&                   (LFI, KREP,INUMER,JREC,             &
+&                    LFI%CNOMAR(IXC(1_JPLIKB ,IRGPIM)), &
+&                    LFI%NBWRIT(KRANG),IFACTM,          &
+&                    LFI%YLFIC (KRANG),IRETIN)
+!
+    IF (IRETIN.EQ.1) THEN
+      GOTO 903
+    ELSEIF (IRETIN.NE.0) THEN
+      GOTO 1001
+    ENDIF
+!
+    INAPHY=JREC+1
+    CALL LFIEDO_FORT                                      &
+&                   (LFI, KREP,INUMER,JREC+1,           &
+&                    LFI%MLGPOS(IXM(1_JPLIKB ,IRGPIM)), &
+&                    LFI%NBWRIT(KRANG),IFACTM,          &
+&                    LFI%YLFIC (KRANG),IRETIN)
+!
+    IF (IRETIN.EQ.1) THEN
+      GOTO 903
+    ELSEIF (IRETIN.NE.0) THEN
+      GOTO 1001
+    ENDIF
+!
+    LFI%LECRPI(IRGPIM,1)=IJ.NE.IPODPI.OR.            &
+&                         LFI%NALDPI(KRANG).EQ.INALPP
+    LFI%LECRPI(IRGPIM,2)=LFI%LECRPI(IRGPIM,1)
+    LLSAUT=.TRUE.
+    GOTO 213
+  ENDIF
+!
+  ENDDO   
+!
+  WRITE (UNIT=LFI%NULOUT,FMT=*)                           &
+&              '$$$ LFIECX - APRES ETIQUETTE 212, JREC= ', &
+&              JREC,' NON TROUVE $$$'
+  KREP=-16
+  GOTO 1001
+!
+213 CONTINUE
+!
+  ENDDO
+!
+  IDEBSE=2
+!
+ELSE
+!
+!       CAS OU L'ARTICLE PHYSIQUE A ECRIRE EXISTE DEJA SUR LE FICHIER.
+!
+  IDEBSE=1
+!
+ENDIF
+!**
+!     3.  -  CAS "GENERAL" .
+!-----------------------------------------------------------------------
+!*
+!     3.1 -  RECHERCHE D'ARTICLES PHYSIQUES ADJACENTS A ECRIRE,
+!            PARMI LES PAGES DE DONNEES *COMPLETES* EXCLUSIVEMENT.
+!-----------------------------------------------------------------------
+!
+INDIS1=0
+INDIS2=LFI%JPNPDF-1
+!
+DO JSENS=IDEBSE,2
+ISENS=2*JSENS-3
+INADJA(JSENS)=(LFI%JPNPDF+1)*(JSENS-1)
+IF (.NOT.LDADON.AND.JSENS.EQ.2) GOTO 320
+INDIK1=INDIS1
+INDIK2=INDIS2
+IREC=KREC
+!
+311 CONTINUE
+IREC=IREC+ISENS
+INDIC1=INDIK1
+INDIC2=INDIK2
+!
+DO J=INDIC1,INDIC2
+INUMAP=LFI%NUMAPD(J,KRANG)
+LLFILT=LFI%LECRPD(J,KRANG).AND.LFI%NLONPD(J,KRANG).EQ.ILARPH
+!
+IF (LLFILT.AND.INUMAP.EQ.IREC) THEN
+  INADJA(JSENS)=INADJA(JSENS)-ISENS
+  IPOSAD(INADJA(JSENS))=J
+  IF (J.EQ.INDIK1) INDIK1=INDIK1+1
+  IF (J.EQ.INDIK2) INDIK2=INDIK2-1
+  IF (J.EQ.INDIS1) INDIS1=INDIS1+1
+  IF (J.EQ.INDIS2) INDIS2=INDIS2-1
+  GOTO 311
+ELSEIF(.NOT.LLFILT.OR.INUMAP.EQ.KREC             &
+&       .OR.ABS (INUMAP-KREC).GT.LFI%JPNPDF) THEN
+  IF (J.EQ.INDIS1) INDIS1=INDIS1+1
+  IF (J.EQ.INDIS2) INDIS2=INDIS2-1
+ELSEIF(INUMAP*ISENS.LT.IREC*ISENS) THEN
+  IF (J.EQ.INDIK1) INDIK1=INDIK1+1
+  IF (J.EQ.INDIK2) INDIK2=INDIK2-1
+ENDIF
+!
+ENDDO
+!
+ENDDO
+!*
+!     3.2 -  ECRITURE DES (EVENTUELS) ARTICLES ADJACENTS DE LFI%NUMERO
+!            *INFERIEUR* A CELUI QUE LE SOUS-PROGRAMME DOIT ECRIRE.
+!-----------------------------------------------------------------------
+!
+320 CONTINUE
+!
+IF (.NOT.LLLOIN) THEN
+  IREC=KREC-INADJA(1)
+!
+  DO J=INADJA(1),1,-1
+  IJ=IPOSAD(J)
+  INAPHY=IREC
+  CALL LFIEDO_FORT                                        &
+&                 (LFI, KREP,INUMER,IREC,               &
+&                  LFI%MTAMPD(IXT(1_JPLIKB ,IJ,KRANG)), &
+&                  LFI%NBWRIT(KRANG),IFACTM,            &
+&                  LFI%YLFIC (KRANG), IRETIN)
+!
+  IF (IRETIN.EQ.1) THEN
+    GOTO 903
+  ELSEIF (IRETIN.NE.0) THEN
+    GOTO 1001
+  ENDIF
+!
+  LFI%LECRPD(IJ,KRANG)=.FALSE.
+  IREC=IREC+1
+  ENDDO
+!
+ENDIF
+!*
+!     3.3 -  ECRITURE DE L'ARTICLE DEMANDE.
+!-----------------------------------------------------------------------
+!
+INAPHY=KREC
+CALL LFIEDO_FORT                                    &
+&               (LFI, KREP,INUMER,KREC,KZONE,     &
+&                LFI%NBWRIT(KRANG),IFACTM,        &
+&                LFI%YLFIC (KRANG),IRETIN)
+!
+IF (IRETIN.EQ.1) THEN
+  GOTO 903
+ELSEIF (IRETIN.NE.0) THEN
+  GOTO 1001
+ENDIF
+!
+!*
+!     3.4 -  ECRITURE DES (EVENTUELS) ARTICLES ADJACENTS DE LFI%NUMERO
+!            *SUPERIEUR* A CELUI QUE LE SOUS-PROGRAMME DOIT ECRIRE.
+!-----------------------------------------------------------------------
+!
+IREC=KREC
+!
+DO J=LFI%JPNPDF,INADJA(2),-1
+IREC=IREC+1
+IJ=IPOSAD(J)
+INAPHY=IREC
+CALL LFIEDO_FORT                                        &
+&               (LFI, KREP,INUMER,IREC,               &
+&                LFI%MTAMPD(IXT(1_JPLIKB ,IJ,KRANG)), &
+&                LFI%NBWRIT(KRANG),IFACTM,            &
+&                LFI%YLFIC (KRANG),                   &
+&                IRETIN)
+!
+IF (IRETIN.EQ.1) THEN
+  GOTO 903
+ELSEIF (IRETIN.NE.0) THEN
+  GOTO 1001
+ENDIF
+!
+LFI%LECRPD(IJ,KRANG)=.FALSE.
+ENDDO
+!
+IRECX=KREC+LFI%JPNPDF-INADJA(2)+1
+!**
+!     4.  -  DANS LE CAS D'UN ARTICLE DE DONNEES, MISE A JOUR DU LFI%NUMERO
+!            MAXI D'ENREGISTREMENT DE CES ARTICLES PHYSIQUES, ET DANS
+!            TOUS LES CAS MISE A JOUR DU NOMBRE D'ARTICLES PHYSIQUES.
+!-----------------------------------------------------------------------
+!
+IF (LDADON) THEN
+  IMDESC=LFI%MDES1D(IXM(LFI%JPAXPD,KRANG))
+  LFI%MDES1D(IXM(LFI%JPAXPD,KRANG))=MAX (IMDESC,IRECX)
+ENDIF
+!
+IMDESC=LFI%MDES1D(IXM(LFI%JPNAPH,KRANG))
+LFI%MDES1D(IXM(LFI%JPNAPH,KRANG))=MAX (IMDESC,IRECX)
+KREP=0
+GOTO 1001
+!**
+!     9.  - CI-DESSOUS, ETIQUETTE DE BRANCHEMENT EN CAS D'ERREUR ECR.
+!           ON FORCE LE CODE DE RETOUR A ETRE POSITIF.
+!-----------------------------------------------------------------------
+!
+903 CONTINUE
+IRETOU=1
+CLACTI='WRITE'
+KREP=ABS (KREP)
+LFI%NUMAPH(KRANG)=INAPHY
+!**
+!    10.  -  PHASE TERMINALE : MESSAGERIE INTERNE EVENTUELLE,
+!            VIA LE SOUS-PROGRAMME "LFIEMS", PUIS RETOUR.
+!-----------------------------------------------------------------------
+!
+1001 CONTINUE
+LLFATA=LLMOER (KREP,KRANG)
+!
+IF (KREP.EQ.0) THEN
+  KRETIN=0
+ELSEIF (KREP.GT.0) THEN
+  KRETIN=IRETOU
+ELSE
+  KRETIN=3
+ENDIF
+!
+IF (LFI%LMISOP.OR.LLFATA) THEN
+  INIMES=2
+  CLNSPR='LFIECX'
+  WRITE (UNIT=CLMESS,FMT='(''KREP='',I5,'', KRANG='',I3,   &
+&       '', KREC='',I6,'', LDADON='',L2,'', KRETIN='',I2)') &
+&    KREP,KRANG,KREC,LDADON,KRETIN
+  CALL LFIEMS_FORT                                         &
+&                 (LFI, INUMER,INIMES,KREP,.FALSE.,CLMESS, &
+&                  CLNSPR,CLACTI)
+ENDIF
+!
+IF (LHOOK) CALL DR_HOOK('LFIECX_FORT',1,ZHOOK_HANDLE)
+
+CONTAINS
+
+#include "lficom2.ixc.h"
+#include "lficom2.ixm.h"
+#include "lficom2.ixt.h"
+#include "lficom2.llmoer.h"
+
+END SUBROUTINE LFIECX_FORT
+
+
+
+! Oct-2012 P. Marguinaud 64b LFI
+SUBROUTINE LFIECX64                                  &
+&           (KREP, KRANG, KREC, KZONE, LDADON, KRETIN)
+USE LFIMOD, ONLY : LFI => LFICOM_DEFAULT, &
+&                   LFICOM_DEFAULT_INIT,   &
+&                   NEW_LFI_DEFAULT
+USE LFI_PRECISION
+IMPLICIT NONE
+! Arguments
+INTEGER (KIND=JPLIKB)  KREP                                   !   OUT
+INTEGER (KIND=JPLIKB)  KRANG                                  ! IN   
+INTEGER (KIND=JPLIKB)  KREC                                   ! IN   
+INTEGER (KIND=JPLIKB)  KZONE      (*)                ! IN   
+LOGICAL                LDADON                                 ! IN   
+INTEGER (KIND=JPLIKB)  KRETIN                                 !   OUT
+
+IF (.NOT. LFICOM_DEFAULT_INIT) CALL NEW_LFI_DEFAULT ()
+
+CALL LFIECX_FORT                                          &
+&           (LFI, KREP, KRANG, KREC, KZONE, LDADON, KRETIN)
+
+END SUBROUTINE LFIECX64
+
+SUBROUTINE LFIECX                                    &
+&           (KREP, KRANG, KREC, KZONE, LDADON, KRETIN)
+USE LFIMOD, ONLY : LFI => LFICOM_DEFAULT, &
+&                   LFICOM_DEFAULT_INIT,   &
+&                   NEW_LFI_DEFAULT
+USE LFI_PRECISION
+IMPLICIT NONE
+! Arguments
+INTEGER (KIND=JPLIKM)  KREP                                   !   OUT
+INTEGER (KIND=JPLIKM)  KRANG                                  ! IN   
+INTEGER (KIND=JPLIKM)  KREC                                   ! IN   
+INTEGER (KIND=JPLIKB)  KZONE      (*)                ! IN   
+LOGICAL                LDADON                                 ! IN   
+INTEGER (KIND=JPLIKM)  KRETIN                                 !   OUT
+
+IF (.NOT. LFICOM_DEFAULT_INIT) CALL NEW_LFI_DEFAULT ()
+
+CALL LFIECX_MT                                            &
+&           (LFI, KREP, KRANG, KREC, KZONE, LDADON, KRETIN)
+
+END SUBROUTINE LFIECX
+
+SUBROUTINE LFIECX_MT                                      &
+&           (LFI, KREP, KRANG, KREC, KZONE, LDADON, KRETIN)
+USE LFIMOD, ONLY : LFICOM
+USE LFI_PRECISION
+IMPLICIT NONE
+! Arguments
+TYPE (LFICOM)          LFI                                    ! INOUT
+INTEGER (KIND=JPLIKM)  KREP                                   !   OUT
+INTEGER (KIND=JPLIKM)  KRANG                                  ! IN   
+INTEGER (KIND=JPLIKM)  KREC                                   ! IN   
+INTEGER (KIND=JPLIKB)  KZONE      (LFI%JPLARX)                ! IN   
+LOGICAL                LDADON                                 ! IN   
+INTEGER (KIND=JPLIKM)  KRETIN                                 !   OUT
+! Local integers
+INTEGER (KIND=JPLIKB)  IREP                                   !   OUT
+INTEGER (KIND=JPLIKB)  IRANG                                  ! IN   
+INTEGER (KIND=JPLIKB)  IREC                                   ! IN   
+INTEGER (KIND=JPLIKB)  IRETIN                                 !   OUT
+! Convert arguments
+
+IRANG      = INT (     KRANG, JPLIKB)
+IREC       = INT (      KREC, JPLIKB)
+
+CALL LFIECX_FORT                                          &
+&           (LFI, IREP, IRANG, IREC, KZONE, LDADON, IRETIN)
+
+KREP       = INT (      IREP, JPLIKM)
+KRETIN     = INT (    IRETIN, JPLIKM)
+
+END SUBROUTINE LFIECX_MT
+
+!INTF KREP            OUT                                                              
+!INTF KRANG         IN                                                                 
+!INTF KREC          IN                                                                 
+!INTF KZONE         IN    DIMS=LFI%JPLARX                KIND=JPLIKB                   
+!INTF LDADON        IN                                                                 
+!INTF KRETIN          OUT                                                              
